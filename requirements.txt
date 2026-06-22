@@ -1,0 +1,12 @@
+torch
+transformers
+accelerate
+datasets
+sentence-transformers
+dppy
+numpy
+scipy
+jieba
+opencc-python-reimplemented
+peft
+jupyter
