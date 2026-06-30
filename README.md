@@ -1,4 +1,4 @@
-# Projet mémoire — Inférence d'idiomes chinois (chengyu)
+# Projet mémoire : Inférence d'idiomes chinois (chengyu)
 
 Inférer le chengyu (成语) qui résume un texte, vu comme une inférence
 bayésienne `p(idiome | texte) = p(texte | idiome) · p(idiome) / Z`, où
@@ -16,13 +16,13 @@ pip install -e .
 
 ## Structure
 
-- `src/chengyu/` — le code (un fichier par tâche) :
+- `src/chengyu/` : le code (un fichier par tâche) :
   `scoring.py`, `prior.py`, `embeddings.py`, `geometry.py`,
   `gmm_select.py`, `mcmc.py`, `evaluation.py`
-- `scripts/` — les commandes à lancer (numérotées)
-- `data/` — données brutes et nettoyées (non versionnées)
-- `results/` — sorties (figures, tableaux)
-- `config.yaml` — réglages (modèle, K, sigma, seed)
+- `scripts/` : les commandes à lancer (numérotées)
+- `data/` : données brutes et nettoyées (non versionnées)
+- `results/` : sorties (figures, tableaux)
+- `config.yaml` : réglages (modèle, K, sigma, seed)
 
 ## Données
 
@@ -37,4 +37,4 @@ python scripts/01_test_scoring.py    # vérifie que le bon idiome gagne
 
 ## Statut
 
-En cours — mise en place du scoring et de l'étude des embeddings.
+En cours : mise en place du scoring et de l'étude des embeddings.
