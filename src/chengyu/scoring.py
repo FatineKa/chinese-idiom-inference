@@ -16,6 +16,11 @@ def log_prob_total(texte: str) -> float: # elle prend un texte et renvoie son sc
         total += logp[k - 1, ids[0, k]].item() # la log probabilité du token k est dans la ligne k-1 (la prédiction précédente) et la colonne correspondant à l’id du token k ; on ajoute cette log-probabilité au total, item convertit le tenseur PyTorch en float Python, total += : additionne car la probabilité d’une séquence est le produit des probabilités de chaque token, et le log d’un produit est la somme des logs
     return total # renvoie la somme des log-probabilités, qui est le score du texte selon Qwen
 
+def score_resume(texte, idiome):
+    """Score de : cet idiome résume-t-il ce texte ? (conditionnement, sans trou)"""
+    prompt = f"成语「{idiome}」概括了这句话："      # "L'idiome X résume cette phrase :"
+    return log_prob_total(prompt + texte) - log_prob_total(prompt)
+
 
 """ Suivons un texte tout au long de log_prob_total
 
@@ -35,3 +40,5 @@ Prenons un exemple simple (en français, pour illustrerla mécanique) : texte = 
 
 
 5. On additionne. Score = −0,7 + (−1,2) = −1,9."""
+
+
