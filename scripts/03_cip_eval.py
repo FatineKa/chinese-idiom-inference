@@ -1,34 +1,48 @@
-import csv, os, random
+"""03_cip_eval.py — évaluation QCM à 7 candidats.
+   Entrée = dst normalisé (sans l'idiome -> pas de fuite).
+   Cible  = idiome extrait par trouver_idiome.
+   Compare la précision avec prior vs sans prior (vraisemblance seule)."""
+
+import random
+import pandas as pd
+from chengyu.evaluation import charger_dico, normaliser, trouver_idiome
 from chengyu.scoring import score_resume
+from chengyu.prior   import log_prior
 
+N = 200                 # nombre d'exemples évalués
 random.seed(0)
-CIP = "data/raw/cip"
-N, K = 50, 7            # 50 exemples, 7 candidats
 
-with open(os.path.join(CIP, "idioms.txt"), encoding="utf-8") as f:
-    idiomes = [l.strip() for l in f if l.strip()]
-idiom_set = set(idiomes)
+dico, longueurs = charger_dico()
+liste_idiomes = list(dico)
+df = pd.read_csv("data/raw/cip/train.csv")
 
-def trouver_idiome(phrase):
-    s = phrase.replace(" ", "")
-    for i in range(len(s) - 3):
-        if s[i:i+4] in idiom_set:
-            return s[i:i+4]
-    return None
+bon_sans, bon_avec, evalues, sautes = 0, 0, 0, 0
 
-bons, total = 0, 0
-with open(os.path.join(CIP, "train.csv"), encoding="utf-8") as f:
-    for row in csv.DictReader(f):
-        if total >= N:
-            break
-        bon = trouver_idiome(row["src"])
-        if bon is None:
-            continue
-        texte = row["dst"].replace(" ", "")
-        candidats = list({bon, *random.sample(idiomes, K - 1)})
-        scores = {c: score_resume(texte, c) for c in candidats}
-        pred = max(scores, key=scores.get)
-        total += 1; bons += (pred == bon)
-        print(f"{total}: {pred} vs {bon} {'OK' if pred==bon else 'X'} ({bons}/{total})")
+for src, dst in zip(df["src"], df["dst"]):
+    if evalues >= N:
+        break
+    cible = trouver_idiome(src, dst, dico, longueurs)
+    if cible is None:                      # ligne ambiguë -> on saute
+        sautes += 1
+        continue
 
-print(f"\nJustesse texte->idiome : {bons}/{total} = {bons/total:.1%}")
+    texte = normaliser(dst)                # entrée = paraphrase sans l'idiome
+    # 7 candidats : le bon + 6 tirés au hasard (distincts du bon)
+    distracteurs = random.sample([i for i in liste_idiomes if i != cible], 6)
+    candidats = distracteurs + [cible]
+    random.shuffle(candidats)
+
+    # score de chaque candidat
+    vrais  = {i: score_resume(texte, i) for i in candidats}   # log p(texte | i)
+    # sans prior : argmax de la vraisemblance seule
+    pred_sans = max(candidats, key=lambda i: vrais[i])
+    # avec prior : argmax de log w = vraisemblance + prior
+    pred_avec = max(candidats, key=lambda i: vrais[i] + log_prior(i))
+
+    bon_sans += (pred_sans == cible)
+    bon_avec += (pred_avec == cible)
+    evalues  += 1
+
+print(f"évalués : {evalues}  (lignes sautées : {sautes})")
+print(f"précision sans prior : {bon_sans}/{evalues} = {bon_sans/evalues:.1%}")
+print(f"précision avec prior : {bon_avec}/{evalues} = {bon_avec/evalues:.1%}")
