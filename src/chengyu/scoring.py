@@ -17,7 +17,7 @@ def log_prob_total(texte: str) -> float: # elle prend un texte et renvoie son sc
     return total # renvoie la somme des log-probabilités, qui est le score du texte selon Qwen
 
 def score_resume(texte, idiome):
-    """Score de : cet idiome résume-t-il ce texte ? (conditionnement, sans trou)"""
+    """Score de : cet idiome résume-t-il ce texte ?"""
     prompt = f"成语「{idiome}」概括了这句话："      # "L'idiome X résume cette phrase :"
     return log_prob_total(prompt + texte) - log_prob_total(prompt)
 
