@@ -7,3 +7,7 @@ results/
 .DS_Store
 *.egg-info/*.ipynb
 .ipynb_checkpoints/
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
