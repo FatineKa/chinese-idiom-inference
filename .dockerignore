@@ -1,0 +1,9 @@
+data/
+results/
+notebooks/
+.venv/
+venv/
+__pycache__/
+*.ipynb
+.git/
+models/
