@@ -1,4 +1,4 @@
-"""build_freq.py — compte la fréquence des idiomes dans CIP (train.csv) et
+"""00_build_freq.py — compte la fréquence des idiomes dans CIP (train.csv) et
    écrit data/freq_idiomes.json. À lancer depuis la racine ~/projet-memoire."""
 
 import json

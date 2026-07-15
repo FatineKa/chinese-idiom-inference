@@ -3,7 +3,7 @@
 import math
 import json
 
-# Fichier {idiome: nombre d'occurrences}. Construit par build_freq.py 
+# Fichier {idiome: nombre d'occurrences}. Construit par scripts/00_build_freq.py
 with open("data/freq_idiomes.json", encoding="utf-8") as f:
     _freq = json.load(f)
 
