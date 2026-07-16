@@ -1,4 +1,8 @@
-data/
+data/raw/cip/train.csv
+data/raw/cip/train.infill.csv
+data/raw/cip/in_domain/
+data/raw/cip/out_domain/
+data/processed/
 results/
 notebooks/
 .venv/

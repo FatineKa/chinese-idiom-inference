@@ -13,6 +13,8 @@ COPY requirements.txt pyproject.toml ./
 COPY src ./src
 RUN pip install --upgrade pip && pip install torch --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt && pip install -e .
 
+COPY data/freq_idiomes.json ./data/freq_idiomes.json
+COPY data/raw/cip/idioms.txt ./data/raw/cip/idioms.txt
 COPY api ./api
 
 EXPOSE 8000
