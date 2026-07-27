@@ -2,8 +2,9 @@
 couche par couche. Un seul forward pass calcule toutes les couches à la
 fois (output_hidden_states ne coûte rien de plus)."""
 import torch
-from chengyu.scoring import _tok, _model, _device
+
 from chengyu.geometry import plongement_idiome
+from chengyu.scoring import _device, _model, _tok
 
 
 @torch.no_grad()

@@ -57,7 +57,7 @@ def log_constante_lipschitz(K: int, p: int, R: float, sigma_min2: float, sigma_m
     return 0.5 * math.log(K) + 0.5 * log_somme
 
 
-def lambda_K(K: int, p: int, R: float, sigma_min2: float, sigma_max2: float, m: int, eps: float = None):
+def lambda_K(K: int, p: int, R: float, sigma_min2: float, sigma_max2: float, m: int, eps: float | None = None):
     """lambda(K) du Théorème 1.11 (Massart généralisé par recouvrement) : le pendant,
     pour ce chapitre, de lambda(K) en Définition 1.11 du chapitre discret — mais
     ici réellement dépendant de K via d_K. Renvoie log(lambda) quand la valeur brute

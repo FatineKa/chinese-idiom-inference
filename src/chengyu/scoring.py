@@ -1,5 +1,8 @@
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer # deux outils de Hugging Face : AutoTokenizer (qui transforme le texte en nombres) et AutoModelForCausalLM (qui charge un modèle de langue « causal », c.-à-d. qui prédit le mot suivant
+from transformers import (  # deux outils de Hugging Face : AutoTokenizer (qui transforme le texte en nombres) et AutoModelForCausalLM (qui charge un modèle de langue « causal », c.-à-d. qui prédit le mot suivant
+    AutoModelForCausalLM,
+    AutoTokenizer,
+)
 
 MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

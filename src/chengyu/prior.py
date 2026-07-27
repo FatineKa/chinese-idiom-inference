@@ -1,7 +1,7 @@
 """prior.py — le prior log p(idiome), estimé par les fréquences d'usage."""
 
-import math
 import json
+import math
 
 # Fichier {idiome: nombre d'occurrences}. Construit par scripts/00_build_freq.py
 with open("data/freq_idiomes.json", encoding="utf-8") as f:

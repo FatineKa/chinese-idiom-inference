@@ -5,10 +5,12 @@
 
 import math
 import random
+
 import numpy as np
-from chengyu.scoring import score_resume
-from chengyu.prior   import log_prior
+
+from chengyu.prior import log_prior
 from chengyu.representation import etat_texte_par_couche
+from chengyu.scoring import score_resume
 
 
 def log_poids(texte, idiome):

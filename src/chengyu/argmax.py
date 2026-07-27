@@ -3,8 +3,10 @@ Remplace le MCMC : pour l'argmax, la constante Z est inutile
 (elle est la même pour tous les idiomes), on score tout le
 dictionnaire et on prend le max."""
 import torch
-from chengyu.scoring import _tok, _model, _device
+
 from chengyu.prior import log_prior
+from chengyu.scoring import _device, _model, _tok
+
 
 @torch.no_grad()
 def scores_texte(texte: str, idiomes: list, batch_size: int = 16) -> dict:
