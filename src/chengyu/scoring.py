@@ -2,14 +2,16 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer # deux outils de Hugging Face : AutoTokenizer (qui transforme le texte en nombres) et AutoModelForCausalLM (qui charge un modèle de langue « causal », c.-à-d. qui prédit le mot suivant
 
 MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
+_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+_dtype = torch.bfloat16 if _device.type == "cuda" else torch.float32 # bf16 : deux fois moins de mémoire, quasi sans perte de précision sur GPU récent ; inutile sur CPU
 _tok = AutoTokenizer.from_pretrained(MODEL) # Charge le tokenizer du modèle
-_model = AutoModelForCausalLM.from_pretrained(MODEL, torch_dtype=torch.float32) # charge le modèle en mémoire
+_model = AutoModelForCausalLM.from_pretrained(MODEL, torch_dtype=_dtype).to(_device) # charge le modèle en mémoire, sur GPU si disponible
 _model.eval() # met le modèle en mode evaluation
 
 @torch.no_grad() #  les gradients servent à apprendre ; comme on ne fait qu’évaluer, les désactiver rend le code plus rapide et moins gourmand en mémoire
-def log_prob_total(texte: str) -> float: # elle prend un texte et renvoie son score 
+def log_prob_total(texte: str) -> float: # elle prend un texte et renvoie son score
     """Somme des log-probabilités que Qwen attribue au texte."""
-    ids = _tok(texte, return_tensors="pt").input_ids # transforme le texte en nombres (ids) et les met dans un tenseur PyTorch
+    ids = _tok(texte, return_tensors="pt").input_ids.to(_device) # transforme le texte en nombres (ids) et les met dans un tenseur PyTorch, sur le même device que le modèle
     logp = torch.log_softmax(_model(ids).logits[0], dim=-1) # Qwen prédit le log-probabilité de chaque mot : _model(ids) fait passer les nombres dans le modèle, c'est une matrice (longueur du texte x vocabulaire) ; log_softmax normalise les scores pour qu’ils soient des log-probabilités, dim =-1 signifie qu’on normalise sur la dimension du vocabulaire
     total = 0.0
     for k in range(1, ids.shape[1]): # on parcourt les tokens du texte (de 1 à la longueur du texte) ; on commence à 1 car le premier token n’a pas de prédiction précédente

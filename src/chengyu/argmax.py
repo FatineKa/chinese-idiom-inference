@@ -3,7 +3,7 @@ Remplace le MCMC : pour l'argmax, la constante Z est inutile
 (elle est la même pour tous les idiomes), on score tout le
 dictionnaire et on prend le max."""
 import torch
-from chengyu.scoring import _tok, _model
+from chengyu.scoring import _tok, _model, _device
 from chengyu.prior import log_prior
 
 @torch.no_grad()
@@ -25,10 +25,10 @@ def scores_texte(texte: str, idiomes: list, batch_size: int = 16) -> dict:
             seqs.append(ids_prompt + ids_texte)
         # padding à droite : sans effet sur les positions utiles (modèle causal)
         L = max(len(s) for s in seqs)
-        batch  = torch.full((len(lot), L), pad, dtype=torch.long)
-        masque = torch.zeros((len(lot), L), dtype=torch.long)
+        batch  = torch.full((len(lot), L), pad, dtype=torch.long, device=_device)
+        masque = torch.zeros((len(lot), L), dtype=torch.long, device=_device)
         for j, s in enumerate(seqs):
-            batch[j, :len(s)] = torch.tensor(s)
+            batch[j, :len(s)] = torch.tensor(s, device=_device)
             masque[j, :len(s)] = 1
         logp = torch.log_softmax(_model(batch, attention_mask=masque).logits, dim=-1)
         for j, idiome in enumerate(lot):
