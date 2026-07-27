@@ -53,18 +53,25 @@ entre les deux classes -- c'est la mesure a lire en priorite ici."""
 import random
 
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, roc_auc_score
 from sklearn.model_selection import GroupShuffleSplit
 
 from chengyu.evaluation import charger_dico, normaliser, trouver_idiome
-from chengyu.representation import modification_par_couche
+from chengyu.representation import modification_par_couche_lot
 
 FIGURE = "results/figures/09_auc_par_couche.png"
 
-N_TEXTES = 100          # nombre de textes echantillonnes dans le corpus CIP
+N_TEXTES = None         # None = toutes les lignes valides de train.csv (95 560 lignes,
+                        # dont certaines seront sautees faute d'idiome cible identifiable
+                        # -- un filtre de qualite des donnees, pas un choix d'echantillon).
+                        # Pas de raison de plafonner arbitrairement si le GPU suit : plus
+                        # de textes ameliore a la fois l'ajustement du classifieur ET la
+                        # fiabilite de l'AUC mesuree en test (section 12.1 du chapitre).
+                        # Mettre un entier ici seulement pour un essai rapide/limite en
+                        # temps -- mesurer d'abord un appel a modification_par_couche sur
+                        # le GPU cible pour estimer le temps total avant de lancer sur tout.
 N_LEURRES = 5           # idiomes incorrects tires au hasard, PAR texte -- plus que
                         # le script 07 (1 seul) : il faut plusieurs exemples
                         # negatifs par texte pour qu'un classifieur ait quelque
@@ -72,51 +79,58 @@ N_LEURRES = 5           # idiomes incorrects tires au hasard, PAR texte -- plus 
 TEST_SIZE = 0.3         # fraction des TEXTES (pas des lignes) reservee au test
 SEED = 0                # graine : meme echantillon, mêmes leurres, meme decoupe
                         # a chaque execution -- resultats reproductibles
+TAILLE_LOT = 32         # candidats traites en UN seul forward pass (modification_par_couche_lot).
+                        # Sur GPU, beaucoup de petits appels successifs sous-utilise le
+                        # parallelisme materiel ; grouper en lots est ce qui rend "traiter
+                        # tout le corpus" praticable en temps raisonnable. Ajuster a la
+                        # baisse si la memoire GPU est limitee, a la hausse si elle ne l'est pas.
 
 rng = random.Random(SEED)
 dico, longueurs = charger_dico()
 liste_idiomes = list(dico)
 df = pd.read_csv("data/raw/cip/train.csv")
 
-# --- Etape 1 : construire le jeu de donnees etiquete -----------------------
+# --- Etape 1 : lister les candidats a evaluer (aucun appel au modele ici) --
 # Pour chaque texte du corpus CIP, on connait l'idiome qu'il paraphrase (la
 # "cible") -- c'est notre seule source d'etiquettes y=1. Les etiquettes y=0
 # sont fabriquees : on tire N_LEURRES idiomes au hasard dans le dictionnaire
 # entier (31 113 entrees), en excluant la cible pour ne pas etiqueter par
 # erreur un doublon comme "leurre".
-lignes = []             # une ligne = une observation (texte, idiome, y, Delta_0..Delta_24)
-n_couches = None        # nombre de couches de Qwen + 1 (embeddings) ; connu apres le 1er appel
-evalues = sautes = 0
+a_evaluer = []          # (texte_id, idiome, texte, y) -- tout ce qui doit passer par le modele
+sautes = 0
 
 for texte_id, (src, dst) in enumerate(zip(df["src"], df["dst"])):
-    if evalues >= N_TEXTES:
+    if N_TEXTES is not None and texte_id >= N_TEXTES:
         break
     cible = trouver_idiome(src, dst, dico, longueurs)
     if cible is None:
         sautes += 1
         continue
     texte = normaliser(dst)
-
     leurres = rng.sample([i for i in liste_idiomes if i != cible], N_LEURRES)
-    candidats = [(cible, 1)] + [(leurre, 0) for leurre in leurres]
+    for idiome, etiquette in [(cible, 1)] + [(leurre, 0) for leurre in leurres]:
+        a_evaluer.append((texte_id, idiome, texte, etiquette))
 
-    for idiome, etiquette in candidats:
-        # modification_par_couche fait UN forward pass Qwen sur le prompt
-        # "texte + idiome" (l'idiome doit venir apres le texte -- contrainte
-        # causale, section 10 du chapitre) et renvoie Delta_l pour toutes les
-        # couches en une seule fois (output_hidden_states=True ne coute rien
-        # de plus qu'un forward pass normal).
-        delta = modification_par_couche(idiome, texte)
-        if n_couches is None:
-            n_couches = len(delta)
+evalues = len(a_evaluer) // (1 + N_LEURRES)
+print(f"textes evalues : {evalues}  (sautes : {sautes})  "
+      f"observations a evaluer : {len(a_evaluer)}  (1 correct + {N_LEURRES} leurres par texte)")
+print(f"traitement par lots de {TAILLE_LOT} ({-(-len(a_evaluer)//TAILLE_LOT)} lots)\n")
+
+# --- Etape 2 : evaluer Delta_l par lots (batching -- section 12.1/14) ------
+lignes = []
+n_couches = None
+for debut in range(0, len(a_evaluer), TAILLE_LOT):
+    lot = a_evaluer[debut:debut + TAILLE_LOT]
+    paires = [(idiome, texte) for _, idiome, texte, _ in lot]
+    deltas = modification_par_couche_lot(paires)   # UN forward pass pour tout le lot
+    if n_couches is None:
+        n_couches = len(deltas[0])
+    for (texte_id, idiome, _texte, etiquette), delta in zip(lot, deltas):
         lignes.append({"texte_id": texte_id, "idiome": idiome, "y": etiquette,
                         **{f"delta_{l}": delta[l] for l in range(n_couches)}})
+    print(f"[{min(debut + TAILLE_LOT, len(a_evaluer))}/{len(a_evaluer)}] observations traitees")
 
-    evalues += 1
-    print(f"[{evalues}/{N_TEXTES}] cible={cible}  ({N_LEURRES} leurres tires)")
-
-print(f"\ntextes evalues : {evalues}  (sautes : {sautes})  "
-      f"observations : {len(lignes)}  (1 correct + {N_LEURRES} leurres par texte)\n")
+print(f"\nobservations : {len(lignes)}\n")
 
 # --- Etape 2 : mettre en forme (X = variables explicatives, y = etiquette) --
 data = pd.DataFrame(lignes)
