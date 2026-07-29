@@ -1,55 +1,58 @@
-"""09_classification_delta.py — etude exploratoire PAR CLASSIFICATION (accord du
-directeur, 2026-07-27), qui remplace/complete le script 07 pour repondre a une
-question precise : le signal
+"""09_classification_delta.py — exploratory study BY CLASSIFICATION (advisor's
+agreement, 2026-07-27), which replaces/completes script 07 to answer a
+precise question: does the signal
 
-    Delta_l(i, t) = 1 - cos( e_statique(i), e_contextualisee(i | t, couche l) )
+    Delta_l(i, t) = 1 - cos( e_static(i), e_contextualized(i | t, layer l) )
 
-(representation.py, section 11 du chapitre) permet-il de DISTINGUER l'idiome
-correct des autres idiomes candidats, pour un texte donne t ?
+(representation.py, section 11 of the chapter) let us DISTINGUISH the
+correct idiom from other candidate idioms, for a given text t?
 
-Le script 07 posait deja cette question, mais avec une seule comparaison par
-texte (le correct contre UN leurre) et une seule statistique descriptive (le
-"taux de victoire" : le correct a-t-il un Delta_l plus petit que le leurre,
-oui/non). C'est un indice, pas une preuve : rien ne dit que ce taux de victoire
-se maintiendrait sur un idiome jamais vu, ni s'il resiste a un vrai jeu de
-test.
+Script 07 already asked this question, but with a single comparison per
+text (the correct one against ONE distractor) and a single descriptive
+statistic (the "win rate": does the correct one have a smaller Delta_l
+than the distractor, yes/no). That's a hint, not proof: nothing says this
+win rate would hold on an idiom never seen, or whether it survives a real
+test set.
 
-Ici, on formalise ca comme un vrai probleme de classification binaire
-supervisee :
-  - une OBSERVATION = une paire (idiome candidat, texte) ;
-  - une ETIQUETTE y in {0, 1} : y=1 si l'idiome est le bon pour ce texte,
-    y=0 sinon (idiome tire au hasard parmi les 31 113 -- un "leurre") ;
-  - une VARIABLE EXPLICATIVE (feature) par couche : Delta_l(i, t), pour
-    l = 0 (couche d'embeddings brute) jusqu'a l = 24 (derniere couche de
-    Qwen2.5-0.5B) ;
-  - un MODELE : une regression logistique, qui apprend un seuil (et une
-    pente) sur Delta_l pour predire y. C'est le classifieur le plus simple
-    qui existe -- un choix deliberement minimal pour une etude EXPLORATOIRE :
-    si meme ce modele-la separe bien les deux classes, le signal est solide ;
-    s'il n'y arrive pas, un modele plus complexe ne sauverait probablement
-    rien non plus (au stade exploratoire, la complexite du modele ne doit pas
-    masquer l'absence de signal).
+Here, we formalize this as a genuine supervised binary classification
+problem:
+  - one OBSERVATION = one (candidate idiom, text) pair;
+  - a LABEL y in {0, 1}: y=1 if the idiom is the correct one for this
+    text, y=0 otherwise (an idiom drawn at random among the 31,113 -- a
+    "distractor");
+  - one EXPLANATORY VARIABLE (feature) per layer: Delta_l(i, t), for
+    l = 0 (raw embedding layer) up to l = L (last layer of the loaded
+    checkpoint -- L is never assumed in advance, it is read from the
+    model);
+  - a MODEL: a logistic regression, which learns a threshold (and a
+    slope) on Delta_l to predict y. This is the simplest classifier that
+    exists -- a deliberately minimal choice for an EXPLORATORY study:
+    if even this model separates the two classes well, the signal is
+    solid; if it can't, a more complex model probably wouldn't save
+    anything either (at the exploratory stage, model complexity should
+    not mask the absence of signal).
 
-Pourquoi decouper l'evaluation PAR TEXTE et pas par ligne (piege classique) :
-si les 1 + N_LEURRES lignes d'un meme texte pouvaient se retrouver a la fois
-dans le train et dans le test, le modele pourrait "reconnaitre" indirectement
-ce texte precis (par ex. son echelle de Delta_l generale) plutot que d'apprendre
-une regle qui generalise a un texte JAMAIS vu. On force donc tout un texte
-(l'idiome correct ET ses leurres) a rester entierement du meme cote de la
-coupure train/test (sklearn.model_selection.GroupShuffleSplit, groupe =
-identifiant du texte).
+Why the evaluation is split BY TEXT and not by row (a classic trap): if
+the 1 + N_DISTRACTORS rows of the same text could end up in both train
+and test, the model could indirectly "recognize" that specific text (e.g.
+its general Delta_l scale) rather than learning a rule that generalizes
+to a text it has NEVER seen. We therefore force a whole text (the correct
+idiom AND its distractors) to stay entirely on the same side of the
+train/test split (sklearn.model_selection.GroupShuffleSplit, group =
+text identifier).
 
-Pourquoi l'AIRE SOUS LA COURBE ROC (AUC) plutot que la seule exactitude
-(accuracy) : il y a N_LEURRES fois plus d'exemples negatifs (y=0) que positifs
-(y=1) dans le jeu de donnees (5 leurres pour 1 correct, ici). Un classifieur
-qui ignore completement Delta_l et repond toujours "leurre" obtient deja
-83.3% d'exactitude sans rien avoir appris -- ce chiffre seul ne dit rien. Une
-maniere equivalente et plus parlante de definir l'AUC : c'est la probabilite
-que, si l'on tire au hasard un exemple positif et un exemple negatif, le
-classifieur attribue un score plus eleve au positif. AUC = 0.5 : autant dire
-un tirage a pile ou face (aucun pouvoir separateur). AUC = 1.0 : separation
-parfaite. Contrairement a l'exactitude, l'AUC ne depend pas du desequilibre
-entre les deux classes -- c'est la mesure a lire en priorite ici."""
+Why the AREA UNDER THE ROC CURVE (AUC) rather than plain accuracy: there
+are N_DISTRACTORS times more negative examples (y=0) than positive ones
+(y=1) in the dataset (5 distractors for 1 correct idiom, here). A
+classifier that completely ignores Delta_l and always answers
+"distractor" already reaches 83.3% accuracy without having learned
+anything -- that number alone says nothing. An equivalent and more
+telling way to define AUC: it is the probability that, drawing one
+positive and one negative example at random, the classifier assigns a
+higher score to the positive one. AUC = 0.5: a coin flip (no separating
+power at all). AUC = 1.0: perfect separation. Unlike accuracy, AUC does
+not depend on the imbalance between the two classes -- it is the metric
+to read first here."""
 import random
 
 import matplotlib.pyplot as plt
@@ -58,143 +61,149 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, roc_auc_score
 from sklearn.model_selection import GroupShuffleSplit
 
-from chengyu.evaluation import charger_dico, normaliser, trouver_idiome
-from chengyu.representation import modification_par_couche_lot
+from chengyu.evaluation import load_dictionary, normalize, find_idiom
+from chengyu.representation import modification_by_layer_batch
 
 FIGURE = "results/figures/09_auc_par_couche.png"
 
-N_TEXTES = None         # None = toutes les lignes valides de train.csv (95 560 lignes,
-                        # dont certaines seront sautees faute d'idiome cible identifiable
-                        # -- un filtre de qualite des donnees, pas un choix d'echantillon).
-                        # Pas de raison de plafonner arbitrairement si le GPU suit : plus
-                        # de textes ameliore a la fois l'ajustement du classifieur ET la
-                        # fiabilite de l'AUC mesuree en test (section 12.1 du chapitre).
-                        # Mettre un entier ici seulement pour un essai rapide/limite en
-                        # temps -- mesurer d'abord un appel a modification_par_couche sur
-                        # le GPU cible pour estimer le temps total avant de lancer sur tout.
-N_LEURRES = 5           # idiomes incorrects tires au hasard, PAR texte -- plus que
-                        # le script 07 (1 seul) : il faut plusieurs exemples
-                        # negatifs par texte pour qu'un classifieur ait quelque
-                        # chose de substantiel a apprendre, pas juste une paire
-TEST_SIZE = 0.3         # fraction des TEXTES (pas des lignes) reservee au test
-SEED = 0                # graine : meme echantillon, mêmes leurres, meme decoupe
-                        # a chaque execution -- resultats reproductibles
-TAILLE_LOT = 32         # candidats traites en UN seul forward pass (modification_par_couche_lot).
-                        # Sur GPU, beaucoup de petits appels successifs sous-utilise le
-                        # parallelisme materiel ; grouper en lots est ce qui rend "traiter
-                        # tout le corpus" praticable en temps raisonnable. Ajuster a la
-                        # baisse si la memoire GPU est limitee, a la hausse si elle ne l'est pas.
+N_TEXTS = None          # None = every valid row of train.csv (95,560 rows,
+                        # some of which will be skipped for lack of an
+                        # identifiable target idiom -- a data-quality
+                        # filter, not a sampling choice). No reason to cap
+                        # arbitrarily if the GPU keeps up: more texts
+                        # improves both the classifier's fit AND the
+                        # reliability of the measured test AUC (chapter
+                        # section 12.1). Only set an integer here for a
+                        # quick/time-limited trial -- first time a single
+                        # call to modification_by_layer on the target GPU
+                        # to estimate the total runtime before launching on
+                        # everything.
+N_DISTRACTORS = 5       # incorrect idioms drawn at random, PER text -- more
+                        # than script 07 (just 1): a classifier needs
+                        # several negative examples per text to have
+                        # something substantial to learn from, not just a
+                        # single pair
+TEST_SIZE = 0.3         # fraction of TEXTS (not rows) held out for testing
+SEED = 0                # seed: same sample, same distractors, same split
+                        # on every run -- reproducible results
+BATCH_SIZE = 32         # candidates processed in ONE forward pass (modification_by_layer_batch).
+                        # On GPU, many small successive calls under-use the
+                        # hardware's parallelism; grouping into batches is
+                        # what makes processing the whole corpus practical
+                        # in reasonable time. Adjust downward if GPU memory
+                        # is limited, upward if it isn't.
 
 rng = random.Random(SEED)
-dico, longueurs = charger_dico()
-liste_idiomes = list(dico)
+dictionary, lengths = load_dictionary()
+idiom_list = list(dictionary)
 df = pd.read_csv("data/raw/cip/train.csv")
 
-# --- Etape 1 : lister les candidats a evaluer (aucun appel au modele ici) --
-# Pour chaque texte du corpus CIP, on connait l'idiome qu'il paraphrase (la
-# "cible") -- c'est notre seule source d'etiquettes y=1. Les etiquettes y=0
-# sont fabriquees : on tire N_LEURRES idiomes au hasard dans le dictionnaire
-# entier (31 113 entrees), en excluant la cible pour ne pas etiqueter par
-# erreur un doublon comme "leurre".
-a_evaluer = []          # (texte_id, idiome, texte, y) -- tout ce qui doit passer par le modele
-sautes = 0
+# --- Step 1: list the candidates to evaluate (no model call here) ---------
+# For each text in the CIP corpus, we know the idiom it paraphrases (the
+# "target") -- our only source of y=1 labels. The y=0 labels are
+# manufactured: we draw N_DISTRACTORS idioms at random from the whole
+# dictionary (31,113 entries), excluding the target so we never mislabel a
+# duplicate as a "distractor".
+to_evaluate = []        # (text_id, idiom, text, y) -- everything that must go through the model
+skipped = 0
 
-for texte_id, (src, dst) in enumerate(zip(df["src"], df["dst"])):
-    if N_TEXTES is not None and texte_id >= N_TEXTES:
+for text_id, (src, dst) in enumerate(zip(df["src"], df["dst"])):
+    if N_TEXTS is not None and text_id >= N_TEXTS:
         break
-    cible = trouver_idiome(src, dst, dico, longueurs)
-    if cible is None:
-        sautes += 1
+    target = find_idiom(src, dst, dictionary, lengths)
+    if target is None:
+        skipped += 1
         continue
-    texte = normaliser(dst)
-    leurres = rng.sample([i for i in liste_idiomes if i != cible], N_LEURRES)
-    for idiome, etiquette in [(cible, 1)] + [(leurre, 0) for leurre in leurres]:
-        a_evaluer.append((texte_id, idiome, texte, etiquette))
+    text = normalize(dst)
+    distractors = rng.sample([i for i in idiom_list if i != target], N_DISTRACTORS)
+    for idiom, label in [(target, 1)] + [(distractor, 0) for distractor in distractors]:
+        to_evaluate.append((text_id, idiom, text, label))
 
-evalues = len(a_evaluer) // (1 + N_LEURRES)
-print(f"textes evalues : {evalues}  (sautes : {sautes})  "
-      f"observations a evaluer : {len(a_evaluer)}  (1 correct + {N_LEURRES} leurres par texte)")
-print(f"traitement par lots de {TAILLE_LOT} ({-(-len(a_evaluer)//TAILLE_LOT)} lots)\n")
+evaluated = len(to_evaluate) // (1 + N_DISTRACTORS)
+print(f"texts evaluated: {evaluated}  (skipped: {skipped})  "
+      f"observations to evaluate: {len(to_evaluate)}  (1 correct + {N_DISTRACTORS} distractors per text)")
+print(f"processing in batches of {BATCH_SIZE} ({-(-len(to_evaluate)//BATCH_SIZE)} batches)\n")
 
-# --- Etape 2 : evaluer Delta_l par lots (batching -- section 12.1/14) ------
-lignes = []
-n_couches = None
-for debut in range(0, len(a_evaluer), TAILLE_LOT):
-    lot = a_evaluer[debut:debut + TAILLE_LOT]
-    paires = [(idiome, texte) for _, idiome, texte, _ in lot]
-    deltas = modification_par_couche_lot(paires)   # UN forward pass pour tout le lot
-    if n_couches is None:
-        n_couches = len(deltas[0])
-    for (texte_id, idiome, _texte, etiquette), delta in zip(lot, deltas):
-        lignes.append({"texte_id": texte_id, "idiome": idiome, "y": etiquette,
-                        **{f"delta_{l}": delta[l] for l in range(n_couches)}})
-    print(f"[{min(debut + TAILLE_LOT, len(a_evaluer))}/{len(a_evaluer)}] observations traitees")
+# --- Step 2: evaluate Delta_l in batches (batching -- section 12.1/14) ----
+rows = []
+n_layers = None
+for start in range(0, len(to_evaluate), BATCH_SIZE):
+    batch = to_evaluate[start:start + BATCH_SIZE]
+    pairs = [(idiom, text) for _, idiom, text, _ in batch]
+    deltas = modification_by_layer_batch(pairs)   # ONE forward pass for the whole batch
+    if n_layers is None:
+        n_layers = len(deltas[0])
+    for (text_id, idiom, _text, label), delta in zip(batch, deltas):
+        rows.append({"text_id": text_id, "idiom": idiom, "y": label,
+                      **{f"delta_{l}": delta[l] for l in range(n_layers)}})
+    print(f"[{min(start + BATCH_SIZE, len(to_evaluate))}/{len(to_evaluate)}] observations processed")
 
-print(f"\nobservations : {len(lignes)}\n")
+print(f"\nobservations: {len(rows)}\n")
 
-# --- Etape 2 : mettre en forme (X = variables explicatives, y = etiquette) --
-data = pd.DataFrame(lignes)
-colonnes_delta = [f"delta_{l}" for l in range(n_couches)]
-X = data[colonnes_delta].to_numpy()   # forme (n_observations, n_couches)
-y = data["y"].to_numpy()              # forme (n_observations,), valeurs dans {0,1}
-groupes = data["texte_id"].to_numpy() # pour la coupure train/test PAR TEXTE
+# --- Step 2: shape the data (X = explanatory variables, y = label) --------
+data = pd.DataFrame(rows)
+delta_columns = [f"delta_{l}" for l in range(n_layers)]
+X = data[delta_columns].to_numpy()    # shape (n_observations, n_layers)
+y = data["y"].to_numpy()              # shape (n_observations,), values in {0,1}
+groups = data["text_id"].to_numpy()   # for the train/test split BY TEXT
 
-# --- Etape 3 : coupure train/test par groupe (texte), pas par ligne --------
-decoupe = GroupShuffleSplit(n_splits=1, test_size=TEST_SIZE, random_state=SEED)
-i_train, i_test = next(decoupe.split(X, y, groupes))
-print(f"train : {len(i_train)} observations ({len(set(groupes[i_train]))} textes)  "
-      f"test : {len(i_test)} observations ({len(set(groupes[i_test]))} textes)\n")
+# --- Step 3: train/test split by group (text), not by row -----------------
+split = GroupShuffleSplit(n_splits=1, test_size=TEST_SIZE, random_state=SEED)
+i_train, i_test = next(split.split(X, y, groups))
+print(f"train: {len(i_train)} observations ({len(set(groups[i_train]))} texts)  "
+      f"test: {len(i_test)} observations ({len(set(groups[i_test]))} texts)\n")
 
-# Reference : un classifieur qui ignore tout et repond toujours "leurre"
-# (la classe majoritaire, N_LEURRES contre 1) -- sert a rappeler que
-# l'exactitude seule est trompeuse ici (voir docstring).
-taux_base = 1 - y[i_test].mean()
-print(f"reference (predire toujours y=0, \"leurre\") : exactitude = {taux_base:.1%}\n")
+# Baseline: a classifier that ignores everything and always answers
+# "distractor" (the majority class, N_DISTRACTORS to 1) -- a reminder that
+# accuracy alone is misleading here (see docstring).
+baseline_rate = 1 - y[i_test].mean()
+print(f"baseline (always predict y=0, \"distractor\"): accuracy = {baseline_rate:.1%}\n")
 
-# --- Etape 4 : un classifieur PAR COUCHE, univarie --------------------------
-# Pour chaque couche l, on ajuste une regression logistique n'utilisant QUE
-# Delta_l comme variable explicative : p(y=1 | Delta_l) = sigmoide(a*Delta_l + b).
-# Objectif : mesurer, couche par couche, le pouvoir separateur de Delta_l
-# SEUL a cette couche -- c'est l'equivalent, en classification proprement
-# evaluee (train/test), du "taux de victoire" du script 07.
-print(f"{'couche':>7} {'AUC':>6} {'exactitude':>11}")
-resultats_couche = []
-for l in range(n_couches):
+# --- Step 4: one classifier PER LAYER, univariate ---------------------------
+# For each layer l, we fit a logistic regression using ONLY Delta_l as the
+# explanatory variable: p(y=1 | Delta_l) = sigmoid(a*Delta_l + b).
+# Goal: measure, layer by layer, the separating power of Delta_l ALONE at
+# that layer -- the properly evaluated (train/test) equivalent of script
+# 07's "win rate".
+print(f"{'layer':>7} {'AUC':>6} {'accuracy':>11}")
+layer_results = []
+for l in range(n_layers):
     clf = LogisticRegression()
     clf.fit(X[i_train, l:l+1], y[i_train])
-    proba = clf.predict_proba(X[i_test, l:l+1])[:, 1]   # p(y=1) predite, sur le test
+    proba = clf.predict_proba(X[i_test, l:l+1])[:, 1]   # predicted p(y=1), on the test set
     auc = roc_auc_score(y[i_test], proba)
     acc = accuracy_score(y[i_test], clf.predict(X[i_test, l:l+1]))
-    resultats_couche.append((l, auc, acc))
+    layer_results.append((l, auc, acc))
     print(f"{l:>7} {auc:>6.3f} {acc:>10.1%}")
 
-meilleure_couche, meilleure_auc, _ = max(resultats_couche, key=lambda r: r[1])
+best_layer, best_auc, _ = max(layer_results, key=lambda r: r[1])
 
-# --- Etape 4bis : tracer AUC(couche) -- lire la courbe, pas juste le pic ---
-# Une seule courbe, construite une seule fois, a partir de TOUTES les
-# observations groupees (pas une courbe par texte -- section 12.1 du
-# chapitre, "comment choisir la couche"). Le trait plein AUC(l) est ce qu'il
-# faut regarder ; le point marque n'est qu'un repere, pas la seule chose a
-# retenir -- une bosse large et stable sur plusieurs couches voisines est un
-# signal plus credible qu'un pic isole.
-couches = [l for l, _, _ in resultats_couche]
-aucs = [a for _, a, _ in resultats_couche]
+# --- Step 4bis: plot AUC(layer) -- read the curve, not just the peak ------
+# A single curve, built once, from ALL observations pooled together (not
+# one curve per text -- chapter section 12.1, "how to choose the layer").
+# The solid AUC(l) line is what matters; the marked point is only a
+# landmark, not the only thing to remember -- a broad, stable bump across
+# several neighboring layers is a more credible signal than an isolated
+# spike.
+layers = [l for l, _, _ in layer_results]
+aucs = [a for _, a, _ in layer_results]
 
 fig, ax = plt.subplots(figsize=(7, 4))
 ax.axhline(0.5, color="#93a4b8", linestyle="--", linewidth=1,
-           label="hasard (AUC = 0.5)")
-ax.plot(couches, aucs, color="#1f5c8a", linewidth=2, marker="o",
-        markersize=4, label="AUC par couche")
-ax.scatter([meilleure_couche], [meilleure_auc], color="#1f5c8a", s=70,
+           label="chance (AUC = 0.5)")
+ax.plot(layers, aucs, color="#1f5c8a", linewidth=2, marker="o",
+        markersize=4, label="AUC by layer")
+ax.scatter([best_layer], [best_auc], color="#1f5c8a", s=70,
            zorder=5, edgecolor="white", linewidth=1)
-ax.annotate(f"couche {meilleure_couche}\nAUC={meilleure_auc:.3f}",
-            (meilleure_couche, meilleure_auc), textcoords="offset points",
+ax.annotate(f"layer {best_layer}\nAUC={best_auc:.3f}",
+            (best_layer, best_auc), textcoords="offset points",
             xytext=(8, 10), fontsize=9, color="#1f5c8a")
-ax.set_xlabel("couche l (0 = embeddings)")
-ax.set_ylabel("AUC (test, groupe par texte)")
-ax.set_title(f"Separabilite de Delta_l(i,t) par couche -- n={evalues} textes, "
-             f"{N_LEURRES} leurres/texte")
-ax.set_ylim(0.35, 1.0)
+ax.set_xlabel("layer l (0 = embeddings)")
+ax.set_ylabel("AUC (test, grouped by text)")
+ax.set_title(f"Separability of Delta_l(i,t) by layer -- n={evaluated} texts, "
+             f"{N_DISTRACTORS} distractors/text")
+ax.set_ylim(0.0, 1.0)  # AUC is bounded in [0,1] -- a narrower limit
+                        # was hiding real points below 0.35 on small samples
 ax.spines["top"].set_visible(False)
 ax.spines["right"].set_visible(False)
 ax.grid(axis="y", color="#dbe6f0", linewidth=0.8)
@@ -202,47 +211,47 @@ ax.set_axisbelow(True)
 ax.legend(frameon=False, loc="lower right")
 fig.tight_layout()
 fig.savefig(FIGURE, dpi=150)
-print(f"\ncourbe AUC(couche) enregistree : {FIGURE}")
+print(f"\nAUC(layer) curve saved: {FIGURE}")
 
-# --- Etape 5 : un classifieur MULTIVARIE, toutes les couches a la fois -----
-# Ici, p(y=1 | Delta_0, ..., Delta_24) = sigmoide(somme_l w_l*Delta_l + b) :
-# la regression logistique apprend un poids w_l par couche. Si ce modele fait
-# nettement mieux que la meilleure couche seule, le signal est REPARTI sur
-# plusieurs couches (elles apportent une information complementaire, pas
-# redondante) ; sinon, une seule couche porte l'essentiel du signal et les
-# autres n'ajoutent que du bruit.
+# --- Step 5: one MULTIVARIATE classifier, all layers at once --------------
+# Here, p(y=1 | Delta_0, ..., Delta_24) = sigmoid(sum_l w_l*Delta_l + b):
+# the logistic regression learns one weight w_l per layer. If this model
+# does clearly better than the best single layer, the signal is SPREAD
+# across several layers (they contribute complementary, not redundant,
+# information); otherwise, a single layer carries essentially all the
+# signal and the others only add noise.
 clf_multi = LogisticRegression(max_iter=1000)
 clf_multi.fit(X[i_train], y[i_train])
 proba_multi = clf_multi.predict_proba(X[i_test])[:, 1]
 auc_multi = roc_auc_score(y[i_test], proba_multi)
 acc_multi = accuracy_score(y[i_test], clf_multi.predict(X[i_test]))
 
-print(f"\nmodele multivarie (les {n_couches} couches ensemble) : "
-      f"AUC = {auc_multi:.3f}  exactitude = {acc_multi:.1%}")
+print(f"\nmultivariate model (all {n_layers} layers together): "
+      f"AUC = {auc_multi:.3f}  accuracy = {acc_multi:.1%}")
 
-# Les coefficients w_l du modele multivarie indiquent quelles couches pesent
-# le plus dans sa decision -- un |w_l| grand signifie que Delta_l a cette
-# couche influence fortement la prediction (une fois les autres couches
-# prises en compte), pas seulement pris isolement comme a l'etape 4.
+# The multivariate model's coefficients w_l indicate which layers weigh
+# most in its decision -- a large |w_l| means Delta_l at that layer
+# strongly influences the prediction (once the other layers are accounted
+# for), not just taken in isolation as in step 4.
 coeffs = sorted(enumerate(clf_multi.coef_[0]), key=lambda c: -abs(c[1]))[:5]
-print("couches les plus influentes dans le modele multivarie (|poids| le plus grand) :",
-      ", ".join(f"couche {l} (poids={c:+.2f})" for l, c in coeffs))
+print("most influential layers in the multivariate model (largest |weight|):",
+      ", ".join(f"layer {l} (weight={c:+.2f})" for l, c in coeffs))
 
 print(f"""
-Lecture :
-- reference {taux_base:.1%} : l'exactitude d'un classifieur qui n'apprend RIEN
-  de Delta_l (il repond toujours "leurre"). Toute exactitude proche de ce
-  chiffre signifie une absence de signal utile -- c'est l'AUC qu'il faut
-  regarder en priorite (elle, ne depend pas du desequilibre 1 correct pour
-  {N_LEURRES} leurres).
-- AUC = 0.5 : Delta_l a cette couche ne distingue pas mieux le correct du
-  leurre qu'un tirage au hasard. AUC = 1.0 : separation parfaite sur le jeu
-  de test (jamais vu pendant l'entrainement).
-- meilleure couche prise seule : couche {meilleure_couche} (AUC = {meilleure_auc:.3f}).
-- Comparer AUC du modele multivarie ({auc_multi:.3f}) a celle de la meilleure
-  couche seule ({meilleure_auc:.3f}) : si les deux sont proches, la couche
-  {meilleure_couche} porte l'essentiel du signal a elle seule (bon candidat
-  pour proposeur_par_texte, section 12.2 du chapitre) ; si le modele
-  multivarie fait nettement mieux, plusieurs couches se completent et il
-  faudrait reflechir a en combiner plusieurs plutot que d'en choisir une seule.
+Reading the results:
+- baseline {baseline_rate:.1%}: the accuracy of a classifier that learns
+  NOTHING from Delta_l (it always answers "distractor"). Any accuracy
+  close to this number means no usable signal -- AUC is the metric to
+  read first (it does not depend on the 1-correct-to-{N_DISTRACTORS}-distractors
+  imbalance).
+- AUC = 0.5: Delta_l at that layer distinguishes the correct idiom from
+  the distractor no better than a coin flip. AUC = 1.0: perfect
+  separation on the test set (never seen during training).
+- best single layer: layer {best_layer} (AUC = {best_auc:.3f}).
+- Compare the multivariate model's AUC ({auc_multi:.3f}) to the best single
+  layer's ({best_auc:.3f}): if the two are close, layer {best_layer} carries
+  essentially all the signal by itself (a good candidate for
+  text_proposer, chapter section 12.2); if the multivariate model does
+  clearly better, several layers complement each other and combining more
+  than one should be considered instead of picking a single one.
 """)

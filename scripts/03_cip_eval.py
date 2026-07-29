@@ -1,48 +1,48 @@
-"""03_cip_eval.py — évaluation QCM à 7 candidats.
-   Entrée = dst normalisé (sans l'idiome -> pas de fuite).
-   Cible  = idiome extrait par trouver_idiome.
-   Compare la précision avec prior vs sans prior (vraisemblance seule)."""
+"""03_cip_eval.py — 7-candidate multiple-choice evaluation.
+   Input  = normalized dst (without the idiom -> no leakage).
+   Target = idiom extracted by find_idiom.
+   Compares accuracy with prior vs. without prior (likelihood only)."""
 
 import random
 import pandas as pd
-from chengyu.evaluation import charger_dico, normaliser, trouver_idiome
-from chengyu.scoring import score_resume
+from chengyu.evaluation import load_dictionary, normalize, find_idiom
+from chengyu.scoring import score_summary
 from chengyu.prior   import log_prior
 
-N = 200                 # nombre d'exemples évalués
+N = 200                 # number of examples evaluated
 random.seed(0)
 
-dico, longueurs = charger_dico()
-liste_idiomes = list(dico)
+dictionary, lengths = load_dictionary()
+idiom_list = list(dictionary)
 df = pd.read_csv("data/raw/cip/train.csv")
 
-bon_sans, bon_avec, evalues, sautes = 0, 0, 0, 0
+correct_without, correct_with, evaluated, skipped = 0, 0, 0, 0
 
 for src, dst in zip(df["src"], df["dst"]):
-    if evalues >= N:
+    if evaluated >= N:
         break
-    cible = trouver_idiome(src, dst, dico, longueurs)
-    if cible is None:                      # ligne ambiguë -> on saute
-        sautes += 1
+    target = find_idiom(src, dst, dictionary, lengths)
+    if target is None:                     # ambiguous row -> skip
+        skipped += 1
         continue
 
-    texte = normaliser(dst)                # entrée = paraphrase sans l'idiome
-    # 7 candidats : le bon + 6 tirés au hasard (distincts du bon)
-    distracteurs = random.sample([i for i in liste_idiomes if i != cible], 6)
-    candidats = distracteurs + [cible]
-    random.shuffle(candidats)
+    text = normalize(dst)                  # input = paraphrase without the idiom
+    # 7 candidates: the correct one + 6 drawn at random (distinct from it)
+    distractors = random.sample([i for i in idiom_list if i != target], 6)
+    candidates = distractors + [target]
+    random.shuffle(candidates)
 
-    # score de chaque candidat
-    vrais  = {i: score_resume(texte, i) for i in candidats}   # log p(texte | i)
-    # sans prior : argmax de la vraisemblance seule
-    pred_sans = max(candidats, key=lambda i: vrais[i])
-    # avec prior : argmax de log w = vraisemblance + prior
-    pred_avec = max(candidats, key=lambda i: vrais[i] + log_prior(i))
+    # score of each candidate
+    raw_scores = {i: score_summary(text, i) for i in candidates}   # log p(text | i)
+    # without prior: argmax of the likelihood alone
+    pred_without = max(candidates, key=lambda i: raw_scores[i])
+    # with prior: argmax of log w = likelihood + prior
+    pred_with = max(candidates, key=lambda i: raw_scores[i] + log_prior(i))
 
-    bon_sans += (pred_sans == cible)
-    bon_avec += (pred_avec == cible)
-    evalues  += 1
+    correct_without += (pred_without == target)
+    correct_with += (pred_with == target)
+    evaluated += 1
 
-print(f"évalués : {evalues}  (lignes sautées : {sautes})")
-print(f"précision sans prior : {bon_sans}/{evalues} = {bon_sans/evalues:.1%}")
-print(f"précision avec prior : {bon_avec}/{evalues} = {bon_avec/evalues:.1%}")
+print(f"evaluated: {evaluated}  (rows skipped: {skipped})")
+print(f"accuracy without prior: {correct_without}/{evaluated} = {correct_without/evaluated:.1%}")
+print(f"accuracy with prior   : {correct_with}/{evaluated} = {correct_with/evaluated:.1%}")

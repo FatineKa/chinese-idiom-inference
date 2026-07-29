@@ -1,34 +1,34 @@
-"""04_argmax_eval.py — évaluation en dictionnaire complet (plus de QCM).
-Pour chaque texte : classement exact de TOUS les idiomes, top-1 / top-10,
-avec et sans prior. On rapporte aussi le rang de la cible."""
+"""04_argmax_eval.py — full-dictionary evaluation (no multiple choice).
+For each text: exact ranking of ALL idioms, top-1 / top-10,
+with and without prior. Also reports the target's rank."""
 import pandas as pd
-from chengyu.evaluation import charger_dico, normaliser, trouver_idiome
-from chengyu.argmax import scores_texte
+from chengyu.evaluation import load_dictionary, normalize, find_idiom
+from chengyu.argmax import text_scores
 from chengyu.prior import log_prior
 
-N = 50    # dictionnaire complet => coûteux : commencer petit
-dico, longueurs = charger_dico()
-liste_idiomes = list(dico)
+N = 50    # full dictionary => expensive: start small
+dictionary, lengths = load_dictionary()
+idiom_list = list(dictionary)
 df = pd.read_csv("data/raw/cip/train.csv")
 
-t1s = t1a = t10s = t10a = evalues = sautes = 0
+t1_without = t1_with = t10_without = t10_with = evaluated = skipped = 0
 for src, dst in zip(df["src"], df["dst"]):
-    if evalues >= N:
+    if evaluated >= N:
         break
-    cible = trouver_idiome(src, dst, dico, longueurs)
-    if cible is None:
-        sautes += 1
+    target = find_idiom(src, dst, dictionary, lengths)
+    if target is None:
+        skipped += 1
         continue
-    texte = normaliser(dst)
-    vrais = scores_texte(texte, liste_idiomes)
-    avec  = {i: v + log_prior(i) for i, v in vrais.items()}
-    rs = sorted(vrais, key=vrais.get, reverse=True).index(cible) + 1
-    ra = sorted(avec,  key=avec.get,  reverse=True).index(cible) + 1
-    t1s += rs == 1; t10s += rs <= 10
-    t1a += ra == 1; t10a += ra <= 10
-    evalues += 1
-    print(f"[{evalues}/{N}] cible={cible}  rang sans/avec prior : {rs}/{ra}")
+    text = normalize(dst)
+    raw_scores = text_scores(text, idiom_list)
+    with_prior_scores = {i: v + log_prior(i) for i, v in raw_scores.items()}
+    rank_without = sorted(raw_scores, key=raw_scores.get, reverse=True).index(target) + 1
+    rank_with = sorted(with_prior_scores, key=with_prior_scores.get, reverse=True).index(target) + 1
+    t1_without += rank_without == 1; t10_without += rank_without <= 10
+    t1_with += rank_with == 1; t10_with += rank_with <= 10
+    evaluated += 1
+    print(f"[{evaluated}/{N}] target={target}  rank without/with prior: {rank_without}/{rank_with}")
 
-print(f"\névalués : {evalues} (sautés : {sautes})")
-print(f"top-1  sans prior : {t1s/evalues:.1%}   avec prior : {t1a/evalues:.1%}")
-print(f"top-10 sans prior : {t10s/evalues:.1%}  avec prior : {t10a/evalues:.1%}")
+print(f"\nevaluated: {evaluated} (skipped: {skipped})")
+print(f"top-1  without prior: {t1_without/evaluated:.1%}   with prior: {t1_with/evaluated:.1%}")
+print(f"top-10 without prior: {t10_without/evaluated:.1%}  with prior: {t10_with/evaluated:.1%}")

@@ -1,18 +1,18 @@
 import pandas as pd
-from chengyu.evaluation import charger_dico, normaliser, trouver_idiome
-from chengyu.scoring import score_resume
+from chengyu.evaluation import load_dictionary, normalize, find_idiom
+from chengyu.scoring import score_summary
 
 df = pd.read_csv("data/raw/cip/train.csv")
-dico, longueurs = charger_dico()
+dictionary, lengths = load_dictionary()
 
-# première ligne "propre" du corpus
+# first "clean" row of the corpus
 for src, dst in zip(df["src"], df["dst"]):
-    cible = trouver_idiome(src, dst, dico, longueurs)
-    if cible:
+    target = find_idiom(src, dst, dictionary, lengths)
+    if target:
         break
-texte = normaliser(dst)
+text = normalize(dst)
 
-print("texte  :", texte)
-print("cible  :", cible)
-print("score(cible)     :", score_resume(texte, cible))
-print("score(hors sujet):", score_resume(texte, "无论如何"))
+print("text  :", text)
+print("target:", target)
+print("score(target)      :", score_summary(text, target))
+print("score(off-topic)   :", score_summary(text, "无论如何"))

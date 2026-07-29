@@ -1,9 +1,8 @@
-"""geometry.py — plongements des idiomes (embeddings), premier pilier du mémoire.
+"""geometry.py — idiom embeddings, first pillar of the thesis.
 
-Le vecteur d'un idiome est la moyenne des embeddings d'entrée (table de tokens,
-avant tout passage dans les couches du transformeur) de ses caractères. Utilisé
-par gmm_select.py et scripts/06_gmm_embeddings_bound.py pour l'étude géométrique
-par mélange gaussien du chapitre de sélection de modèle."""
+An idiom's vector is the average of the input embeddings (token table,
+before any pass through the transformer's layers) of its characters. Used
+by representation.py (the Delta_l signal, idiom-inference chapter)."""
 import numpy as np
 import torch
 from sklearn.decomposition import PCA
@@ -12,18 +11,18 @@ from chengyu.scoring import _model, _tok
 
 
 @torch.no_grad()
-def plongement_idiome(idiome: str) -> np.ndarray:
-    ids = _tok(idiome, add_special_tokens=False).input_ids
+def idiom_embedding(idiom: str) -> np.ndarray:
+    ids = _tok(idiom, add_special_tokens=False).input_ids
     vecs = _model.get_input_embeddings().weight[ids]
     return vecs.mean(dim=0).float().numpy()
 
 
-def plongements(idiomes: list) -> np.ndarray:
-    return np.stack([plongement_idiome(i) for i in idiomes])
+def embeddings(idioms: list) -> np.ndarray:
+    return np.stack([idiom_embedding(i) for i in idioms])
 
 
-def reduire(X: np.ndarray, p: int):
-    """PCA vers p dimensions. Renvoie (X_reduit, pca) ; pca.explained_variance_ratio_
-    donne la part de variance conservée."""
+def reduce(X: np.ndarray, p: int):
+    """PCA down to p dimensions. Returns (X_reduced, pca); pca.explained_variance_ratio_
+    gives the fraction of variance retained."""
     pca = PCA(n_components=p, random_state=0)
     return pca.fit_transform(X), pca

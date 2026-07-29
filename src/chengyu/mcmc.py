@@ -1,7 +1,7 @@
-"""mcmc.py — boucle Metropolis-Hastings. proposeur_uniforme est du Python
-   pur (aucune dépendance à PyTorch/numpy). proposeur_par_texte, plus bas,
-   dépend de numpy et, via representation.py, de PyTorch — mais un seul
-   forward pass Qwen à la construction, indépendant du nombre d'idiomes."""
+"""mcmc.py — Metropolis-Hastings loop. uniform_proposer is pure Python
+   (no PyTorch/numpy dependency). text_proposer, below, depends on numpy
+   and, via representation.py, on PyTorch — but only one Qwen forward pass
+   at construction time, independent of the number of idioms."""
 
 import math
 import random
@@ -9,57 +9,57 @@ import random
 import numpy as np
 
 from chengyu.prior import log_prior
-from chengyu.representation import etat_texte_par_couche
-from chengyu.scoring import score_resume
+from chengyu.representation import text_state_by_layer
+from chengyu.scoring import score_summary
 
 
-def log_poids(texte, idiome):
-    return score_resume(texte, idiome) + log_prior(idiome)   # score_resume = PyTorch, en interne
+def log_weight(text, idiom):
+    return score_summary(text, idiom) + log_prior(idiom)   # score_summary = PyTorch, internally
 
 
-def metropolis_hastings(texte, etat_init, proposer, n_pas, seed=0):
-    rng    = random.Random(seed)
-    actuel = etat_init
-    lw     = log_poids(texte, actuel)
-    trace  = []
-    for _ in range(n_pas):
-        candidat, log_hastings = proposer(actuel, rng)
-        lw2 = log_poids(texte, candidat)                     # 1 appel Qwen (PyTorch dedans)
+def metropolis_hastings(text, initial_state, proposer, n_steps, seed=0):
+    rng     = random.Random(seed)
+    current = initial_state
+    lw      = log_weight(text, current)
+    trace   = []
+    for _ in range(n_steps):
+        candidate, log_hastings = proposer(current, rng)
+        lw2 = log_weight(text, candidate)                    # 1 Qwen call (PyTorch inside)
         if math.log(rng.random()) < (lw2 - lw) + log_hastings:
-            actuel, lw = candidat, lw2
-        trace.append(actuel)
+            current, lw = candidate, lw2
+        trace.append(current)
     return trace
 
 
-def proposeur_uniforme(idiomes):
-    n = len(idiomes)
-    def proposer(actuel, rng):
+def uniform_proposer(idioms):
+    n = len(idioms)
+    def propose(current, rng):
         while True:
-            candidat = idiomes[rng.randrange(n)]
-            if candidat != actuel:
-                return candidat, 0.0
-    return proposer
+            candidate = idioms[rng.randrange(n)]
+            if candidate != current:
+                return candidate, 0.0
+    return propose
 
 
-def proposeur_par_texte(idiomes: list, texte: str, embeddings_statiques: np.ndarray,
-                         couche: int, temperature: float = 1.0):
-    """Proposeur informé, coût constant : un seul forward pass Qwen (sur le
-    texte seul, ici à la construction), comparé aux embeddings statiques des
-    idiomes précalculés une fois (geometry.plongements). `couche` doit venir
-    de 07_etude_representation.py — ne pas en choisir une au hasard."""
-    v = etat_texte_par_couche(texte)[couche].numpy()
-    normes = np.linalg.norm(embeddings_statiques, axis=1) * np.linalg.norm(v)
-    poids = np.exp((embeddings_statiques @ v / normes) / temperature)
-    poids /= poids.sum()
-    index = {idiome: k for k, idiome in enumerate(idiomes)}
+def text_proposer(idioms: list, text: str, static_embeddings: np.ndarray,
+                   layer: int, temperature: float = 1.0):
+    """Informed proposer, constant cost: a single Qwen forward pass (on the
+    text alone, here at construction time), compared against the idioms'
+    static embeddings precomputed once (geometry.embeddings). `layer` must
+    come from 09_classification_delta.py — do not pick one at random."""
+    v = text_state_by_layer(text)[layer].numpy()
+    norms = np.linalg.norm(static_embeddings, axis=1) * np.linalg.norm(v)
+    weights = np.exp((static_embeddings @ v / norms) / temperature)
+    weights /= weights.sum()
+    index = {idiom: k for k, idiom in enumerate(idioms)}
 
-    print(f"proposeur informé construit : couche {couche}, {len(idiomes)} idiomes, "
-          f"poids min={poids.min():.2e} max={poids.max():.2e} "
-          f"(idiome le plus favorisé : {idiomes[poids.argmax()]})")
+    print(f"informed proposer built: layer {layer}, {len(idioms)} idioms, "
+          f"weight min={weights.min():.2e} max={weights.max():.2e} "
+          f"(most favored idiom: {idioms[weights.argmax()]})")
 
-    def proposer(actuel, rng):
-        idx = rng.choices(range(len(idiomes)), weights=poids.tolist())[0]
-        candidat = idiomes[idx]
-        log_hastings = math.log(poids[index[actuel]]) - math.log(poids[idx])
-        return candidat, log_hastings
-    return proposer
+    def propose(current, rng):
+        idx = rng.choices(range(len(idioms)), weights=weights.tolist())[0]
+        candidate = idioms[idx]
+        log_hastings = math.log(weights[index[current]]) - math.log(weights[idx])
+        return candidate, log_hastings
+    return propose

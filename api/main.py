@@ -1,20 +1,20 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from chengyu.argmax import classer
-from chengyu.evaluation import charger_dico
+from chengyu.argmax import rank
+from chengyu.evaluation import load_dictionary
 
 app = FastAPI(title="Chinese Idiom Inference", version="0.1.0")
 
-# Dictionnaire complet (~31k idiomes), chargé une seule fois au démarrage.
-_dico, _ = charger_dico()
-IDIOMS = list(_dico)
+# Full dictionary (~31k idioms), loaded once at startup.
+_dictionary, _ = load_dictionary()
+IDIOMS = list(_dictionary)
 
 
 class Query(BaseModel):
     text: str
     top_k: int = 3
-    candidates: list[str] | None = None  # optionnel : restreindre au lieu du dictionnaire complet
+    candidates: list[str] | None = None  # optional: restrict instead of using the full dictionary
 
 
 @app.get("/health")
@@ -25,7 +25,7 @@ def health():
 @app.post("/predict")
 def predict(q: Query):
     idioms = q.candidates or IDIOMS
-    top = classer(q.text, idioms, k=q.top_k)
+    top = rank(q.text, idioms, k=q.top_k)
     return {
         "query": q.text,
         "predictions": [{"idiom": i, "score": s} for i, s in top],

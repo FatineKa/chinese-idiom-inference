@@ -1,49 +1,55 @@
 import torch
-from transformers import (  # deux outils de Hugging Face : AutoTokenizer (qui transforme le texte en nombres) et AutoModelForCausalLM (qui charge un modèle de langue « causal », c.-à-d. qui prédit le mot suivant
+from transformers import (  # two Hugging Face tools: AutoTokenizer (turns text into numbers) and AutoModelForCausalLM (loads a causal language model, i.e. one that predicts the next word)
     AutoModelForCausalLM,
     AutoTokenizer,
 )
 
-MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
+MODEL = "Qwen/Qwen2.5-7B-Instruct"
 _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-_dtype = torch.bfloat16 if _device.type == "cuda" else torch.float32 # bf16 : deux fois moins de mémoire, quasi sans perte de précision sur GPU récent ; inutile sur CPU
-_tok = AutoTokenizer.from_pretrained(MODEL) # Charge le tokenizer du modèle
-_model = AutoModelForCausalLM.from_pretrained(MODEL, torch_dtype=_dtype).to(_device) # charge le modèle en mémoire, sur GPU si disponible
-_model.eval() # met le modèle en mode evaluation
+_dtype = torch.bfloat16 if _device.type == "cuda" else torch.float32  # bf16: half the memory, near-lossless precision on a recent GPU; pointless on CPU
+_tok = AutoTokenizer.from_pretrained(MODEL)  # loads the model's tokenizer
+_model = AutoModelForCausalLM.from_pretrained(MODEL, torch_dtype=_dtype).to(_device)  # loads the model into memory, on GPU if available
+_model.eval()  # sets the model to evaluation mode
 
-@torch.no_grad() #  les gradients servent à apprendre ; comme on ne fait qu’évaluer, les désactiver rend le code plus rapide et moins gourmand en mémoire
-def log_prob_total(texte: str) -> float: # elle prend un texte et renvoie son score
-    """Somme des log-probabilités que Qwen attribue au texte."""
-    ids = _tok(texte, return_tensors="pt").input_ids.to(_device) # transforme le texte en nombres (ids) et les met dans un tenseur PyTorch, sur le même device que le modèle
-    logp = torch.log_softmax(_model(ids).logits[0], dim=-1) # Qwen prédit le log-probabilité de chaque mot : _model(ids) fait passer les nombres dans le modèle, c'est une matrice (longueur du texte x vocabulaire) ; log_softmax normalise les scores pour qu’ils soient des log-probabilités, dim =-1 signifie qu’on normalise sur la dimension du vocabulaire
+@torch.no_grad()  # gradients are for training; since we're only evaluating, disabling them makes the code faster and less memory-hungry
+def log_prob_total(text: str) -> float:  # takes a text and returns its score
+    """Sum of the log-probabilities Qwen assigns to the text."""
+    ids = _tok(text, return_tensors="pt").input_ids.to(_device)  # turns the text into numbers (ids) and puts them in a PyTorch tensor, on the same device as the model
+    logp = torch.log_softmax(_model(ids).logits[0], dim=-1)  # Qwen predicts the log-probability of each word: _model(ids) runs the numbers through the model, producing a (text length x vocabulary) matrix; log_softmax normalizes the scores into log-probabilities, dim=-1 means we normalize over the vocabulary dimension
     total = 0.0
-    for k in range(1, ids.shape[1]): # on parcourt les tokens du texte (de 1 à la longueur du texte) ; on commence à 1 car le premier token n’a pas de prédiction précédente
-        total += logp[k - 1, ids[0, k]].item() # la log probabilité du token k est dans la ligne k-1 (la prédiction précédente) et la colonne correspondant à l’id du token k ; on ajoute cette log-probabilité au total, item convertit le tenseur PyTorch en float Python, total += : additionne car la probabilité d’une séquence est le produit des probabilités de chaque token, et le log d’un produit est la somme des logs
-    return total # renvoie la somme des log-probabilités, qui est le score du texte selon Qwen
+    for k in range(1, ids.shape[1]):  # walk through the text's tokens (from 1 to the text length); we start at 1 because the first token has no preceding prediction
+        total += logp[k - 1, ids[0, k]].item()  # the log-probability of token k sits at row k-1 (the preceding prediction) and the column matching token k's id; add it to the running total, item() converts the PyTorch tensor to a Python float, total += : summed because the probability of a sequence is the product of each token's probability, and the log of a product is the sum of the logs
+    return total  # returns the sum of log-probabilities: the text's score under Qwen
 
-def score_resume(texte, idiome):
-    """Score de : cet idiome résume-t-il ce texte ?"""
-    prompt = f"成语「{idiome}」概括了这句话："      # "L'idiome X résume cette phrase :"
-    return log_prob_total(prompt + texte) - log_prob_total(prompt)
-
-
-""" Suivons un texte tout au long de log_prob_total
-
-Prenons un exemple simple (en français, pour illustrerla mécanique) : texte = "le chat dort"
+def score_summary(text, idiom):
+    """Score of: does this idiom summarize this text?"""
+    prompt = f"成语「{idiom}」概括了这句话："      # "The idiom X summarizes this sentence:"
+    return log_prob_total(prompt + text) - log_prob_total(prompt)
 
 
-1. Texte → tokens (nombres). Le tokenizer découpe et numérote : "le chat dort" −→ [ 12, 88, 305 ] 
+"""Let's trace a text all the way through log_prob_total
+
+Take a simple example (in English, to illustrate the mechanics):
+text = "the cat sleeps"
 
 
-2. Nombres → modèle → logits. Le modèle lit ces nombres et produit, à chaque position, un score brut pour chaque mot possible. C’est une grande matrice : (3 positions) × (taille du vocabulaire, ∼150 000)
+1. Text -> tokens (numbers). The tokenizer splits and numbers it:
+   "the cat sleeps" -> [ 12, 88, 305 ]
 
 
-3. Logits → log-probabilités. log_softmax transforme chaque ligne en probabilités (qui somment à 1), puis en logarithme
+2. Numbers -> model -> logits. The model reads these numbers and produces,
+   at every position, a raw score for every possible word. This is a large
+   matrix: (3 positions) x (vocabulary size, ~150,000)
 
 
-4. On lit la log-probabilité du vrai mot suivant. À la position 0 (« le »), le modèle prédit le mot 1 (« chat ») : on lit log p(chat | le), disons −0,7. À la position 1 (« le chat »), on lit log p(dort | le chat), disons −1,2.
+3. Logits -> log-probabilities. log_softmax turns each row into
+   probabilities (summing to 1), then takes the logarithm
 
 
-5. On additionne. Score = −0,7 + (−1,2) = −1,9."""
+4. We read off the log-probability of the actual next word. At position 0
+   ("the"), the model predicts word 1 ("cat"): we read log p(cat | the),
+   say -0.7. At position 1 ("the cat"), we read log p(sleeps | the cat),
+   say -1.2.
 
 
+5. We sum them. Score = -0.7 + (-1.2) = -1.9."""

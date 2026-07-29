@@ -4,43 +4,43 @@ from collections import Counter
 
 import pandas as pd
 
-from chengyu.mcmc import metropolis_hastings, proposeur_uniforme, log_poids
-from chengyu.evaluation import charger_dico, normaliser, trouver_idiome
+from chengyu.mcmc import metropolis_hastings, uniform_proposer, log_weight
+from chengyu.evaluation import load_dictionary, normalize, find_idiom
 
 
-def verifier(texte, sous_ensemble, n_pas=20000):
-    """Compare la posterieure exacte (calculable sur un petit ensemble)
-    aux frequences de visite du MCMC. Si ca coincide, le MCMC est correct."""
-    w = {i: math.exp(log_poids(texte, i)) for i in sous_ensemble}
+def verify(text, subset, n_steps=20000):
+    """Compares the exact posterior (computable on a small set) to the
+    MCMC's visit frequencies. If they match, the MCMC is correct."""
+    w = {i: math.exp(log_weight(text, i)) for i in subset}
     Z = sum(w.values())
-    exacte = {i: w[i] / Z for i in sous_ensemble}      # posterieure EXACTE
+    exact = {i: w[i] / Z for i in subset}      # EXACT posterior
 
-    prop = proposeur_uniforme(sous_ensemble)
-    trace = metropolis_hastings(texte, sous_ensemble[0], prop, n_pas)
-    trace = trace[n_pas // 10:]                        # burn-in
+    proposer_fn = uniform_proposer(subset)
+    trace = metropolis_hastings(text, subset[0], proposer_fn, n_steps)
+    trace = trace[n_steps // 10:]              # burn-in
     c = Counter(trace)
-    print(f"{'idiome':<8} {'exacte':>8} {'MCMC':>8}")
-    for i in sorted(sous_ensemble, key=lambda x: -exacte[x]):
-        print(f"{i:<8} {exacte[i]:>8.3f} {c[i] / len(trace):>8.3f}")
+    print(f"{'idiom':<8} {'exact':>8} {'MCMC':>8}")
+    for i in sorted(subset, key=lambda x: -exact[x]):
+        print(f"{i:<8} {exact[i]:>8.3f} {c[i] / len(trace):>8.3f}")
 
 
 if __name__ == "__main__":
-    # 1. un texte propre et sa cible
+    # 1. a clean text and its target
     df = pd.read_csv("data/raw/cip/train.csv")
-    dico, longueurs = charger_dico()
+    dictionary, lengths = load_dictionary()
     for src, dst in zip(df["src"], df["dst"]):
-        cible = trouver_idiome(src, dst, dico, longueurs)
-        if cible:
+        target = find_idiom(src, dst, dictionary, lengths)
+        if target:
             break
-    texte = normaliser(dst)
-    print("texte :", texte)
-    print("cible :", cible, "\n")
+    text = normalize(dst)
+    print("text  :", text)
+    print("target:", target, "\n")
 
-    # 2. 20 candidats : la cible + 19 idiomes frequents
+    # 2. 20 candidates: the target + 19 frequent idioms
     with open("data/freq_idiomes.json", encoding="utf-8") as f:
         freq = json.load(f)
-    frequents = sorted(freq, key=freq.get, reverse=True)
-    sous_ensemble = [cible] + [i for i in frequents if i != cible][:19]
+    frequent = sorted(freq, key=freq.get, reverse=True)
+    subset = [target] + [i for i in frequent if i != target][:19]
 
-    # 3. exacte vs MCMC
-    verifier(texte, sous_ensemble, n_pas=20000)
+    # 3. exact vs. MCMC
+    verify(text, subset, n_steps=20000)
