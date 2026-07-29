@@ -53,6 +53,7 @@ higher score to the positive one. AUC = 0.5: a coin flip (no separating
 power at all). AUC = 1.0: perfect separation. Unlike accuracy, AUC does
 not depend on the imbalance between the two classes -- it is the metric
 to read first here."""
+import os
 import random
 
 import matplotlib.pyplot as plt
@@ -61,12 +62,14 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, roc_auc_score
 from sklearn.model_selection import GroupShuffleSplit
 
-from chengyu.evaluation import load_dictionary, normalize, find_idiom
+from chengyu.evaluation import find_idiom, load_dictionary, normalize
 from chengyu.representation import modification_by_layer_batch
 
 FIGURE = "results/figures/09_auc_par_couche.png"
 
-N_TEXTS = None          # None = every valid row of train.csv (95,560 rows,
+_n_texts_env = os.environ.get("CHENGYU_N_TEXTS")
+N_TEXTS = int(_n_texts_env) if _n_texts_env else None
+                        # None (default) = every valid row of train.csv (95,560 rows,
                         # some of which will be skipped for lack of an
                         # identifiable target idiom -- a data-quality
                         # filter, not a sampling choice). No reason to cap
