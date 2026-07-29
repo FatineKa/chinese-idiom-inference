@@ -5,6 +5,7 @@
 
 import math
 import random
+import time
 
 import numpy as np
 
@@ -17,17 +18,23 @@ def log_weight(text, idiom):
     return score_summary(text, idiom) + log_prior(idiom)   # score_summary = PyTorch, internally
 
 
-def metropolis_hastings(text, initial_state, proposer, n_steps, seed=0):
+def metropolis_hastings(text, initial_state, proposer, n_steps, seed=0, progress_every=None):
+    """progress_every: if set, prints a status line every that many steps.
+    Off by default, since this function is also called from contexts
+    (e.g. a future API endpoint) where console output isn't wanted."""
     rng     = random.Random(seed)
     current = initial_state
     lw      = log_weight(text, current)
     trace   = []
-    for _ in range(n_steps):
+    start   = time.time()
+    for step in range(n_steps):
         candidate, log_hastings = proposer(current, rng)
         lw2 = log_weight(text, candidate)                    # 1 Qwen call (PyTorch inside)
         if math.log(rng.random()) < (lw2 - lw) + log_hastings:
             current, lw = candidate, lw2
         trace.append(current)
+        if progress_every and (step + 1) % progress_every == 0:
+            print(f"  step {step + 1}/{n_steps}  ({time.time() - start:.0f}s elapsed)")
     return trace
 
 

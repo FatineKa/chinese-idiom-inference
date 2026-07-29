@@ -4,10 +4,12 @@
    Compares accuracy with prior vs. without prior (likelihood only)."""
 
 import random
+
 import pandas as pd
-from chengyu.evaluation import load_dictionary, normalize, find_idiom
-from chengyu.scoring import score_summary
-from chengyu.prior   import log_prior
+
+from chengyu.argmax import text_scores
+from chengyu.evaluation import find_idiom, load_dictionary, normalize
+from chengyu.prior import log_prior
 
 N = 200                 # number of examples evaluated
 random.seed(0)
@@ -32,8 +34,8 @@ for src, dst in zip(df["src"], df["dst"]):
     candidates = distractors + [target]
     random.shuffle(candidates)
 
-    # score of each candidate
-    raw_scores = {i: score_summary(text, i) for i in candidates}   # log p(text | i)
+    # score of all 7 candidates in a single forward pass
+    raw_scores = text_scores(text, candidates, batch_size=len(candidates))   # log p(text | i)
     # without prior: argmax of the likelihood alone
     pred_without = max(candidates, key=lambda i: raw_scores[i])
     # with prior: argmax of log w = likelihood + prior
@@ -42,7 +44,10 @@ for src, dst in zip(df["src"], df["dst"]):
     correct_without += (pred_without == target)
     correct_with += (pred_with == target)
     evaluated += 1
+    if evaluated % 20 == 0:
+        print(f"[{evaluated}/{N}] accuracy so far -- without prior: {correct_without/evaluated:.1%}  "
+              f"with prior: {correct_with/evaluated:.1%}")
 
-print(f"evaluated: {evaluated}  (rows skipped: {skipped})")
+print(f"\nevaluated: {evaluated}  (rows skipped: {skipped})")
 print(f"accuracy without prior: {correct_without}/{evaluated} = {correct_without/evaluated:.1%}")
 print(f"accuracy with prior   : {correct_with}/{evaluated} = {correct_with/evaluated:.1%}")

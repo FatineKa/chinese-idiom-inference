@@ -1,14 +1,17 @@
-import math
 import json
+import math
+import os
 from collections import Counter
 
 import pandas as pd
 
-from chengyu.mcmc import metropolis_hastings, uniform_proposer, log_weight
-from chengyu.evaluation import load_dictionary, normalize, find_idiom
+from chengyu.evaluation import find_idiom, load_dictionary, normalize
+from chengyu.mcmc import log_weight, metropolis_hastings, uniform_proposer
+
+N_STEPS = int(os.environ.get("CHENGYU_N_STEPS", "20000"))  # override for a quick test, e.g. CHENGYU_N_STEPS=500
 
 
-def verify(text, subset, n_steps=20000):
+def verify(text, subset, n_steps=N_STEPS):
     """Compares the exact posterior (computable on a small set) to the
     MCMC's visit frequencies. If they match, the MCMC is correct."""
     w = {i: math.exp(log_weight(text, i)) for i in subset}
@@ -16,7 +19,8 @@ def verify(text, subset, n_steps=20000):
     exact = {i: w[i] / Z for i in subset}      # EXACT posterior
 
     proposer_fn = uniform_proposer(subset)
-    trace = metropolis_hastings(text, subset[0], proposer_fn, n_steps)
+    trace = metropolis_hastings(text, subset[0], proposer_fn, n_steps,
+                                 progress_every=max(1, n_steps // 10))
     trace = trace[n_steps // 10:]              # burn-in
     c = Counter(trace)
     print(f"{'idiom':<8} {'exact':>8} {'MCMC':>8}")
@@ -43,4 +47,4 @@ if __name__ == "__main__":
     subset = [target] + [i for i in frequent if i != target][:19]
 
     # 3. exact vs. MCMC
-    verify(text, subset, n_steps=20000)
+    verify(text, subset, n_steps=N_STEPS)
