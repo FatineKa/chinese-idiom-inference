@@ -23,7 +23,7 @@ def modification_by_layer(idiom: str, text: str) -> list:
     influenced by it (causal model — see the chapter, section "The
     causal constraint")."""
     prompt = f"这句话「{text}」，可以概括为成语「{idiom}"
-    e_static = torch.from_numpy(idiom_embedding(idiom))
+    e_static = torch.from_numpy(idiom_embedding(idiom)).to(_device)
     states = last_token_states(prompt)
     return [1 - torch.nn.functional.cosine_similarity(e_static, e, dim=0).item()
             for e in states]
@@ -77,7 +77,7 @@ def modification_by_layer_batch(pairs: list) -> list:
     states = last_token_states_batch(prompts)   # (batch, n_layers, dim)
     results = []
     for k, (idiom, _text) in enumerate(pairs):
-        e_static = torch.from_numpy(idiom_embedding(idiom))
+        e_static = torch.from_numpy(idiom_embedding(idiom)).to(_device)
         results.append([
             1 - torch.nn.functional.cosine_similarity(e_static, states[k, l], dim=0).item()
             for l in range(states.shape[1])

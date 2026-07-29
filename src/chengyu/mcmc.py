@@ -54,7 +54,7 @@ def text_proposer(idioms: list, text: str, static_embeddings: np.ndarray,
     text alone, here at construction time), compared against the idioms'
     static embeddings precomputed once (geometry.embeddings). `layer` must
     come from 09_classification_delta.py — do not pick one at random."""
-    v = text_state_by_layer(text)[layer].numpy()
+    v = text_state_by_layer(text)[layer].cpu().numpy()
     norms = np.linalg.norm(static_embeddings, axis=1) * np.linalg.norm(v)
     weights = np.exp((static_embeddings @ v / norms) / temperature)
     weights /= weights.sum()

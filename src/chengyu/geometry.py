@@ -14,7 +14,7 @@ from chengyu.scoring import _model, _tok
 def idiom_embedding(idiom: str) -> np.ndarray:
     ids = _tok(idiom, add_special_tokens=False).input_ids
     vecs = _model.get_input_embeddings().weight[ids]
-    return vecs.mean(dim=0).float().numpy()
+    return vecs.mean(dim=0).float().cpu().numpy()
 
 
 def embeddings(idioms: list) -> np.ndarray:
