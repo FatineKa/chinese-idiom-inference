@@ -3,7 +3,6 @@ layer by layer. A single forward pass computes every layer at once
 (output_hidden_states costs nothing extra)."""
 import torch
 
-from chengyu.geometry import idiom_embedding
 from chengyu.scoring import _device, _model, _tok
 
 
@@ -17,15 +16,19 @@ def last_token_states(prompt: str) -> torch.Tensor:
 
 
 def modification_by_layer(idiom: str, text: str) -> list:
-    """Delta_l(i,t) for each layer l: static/contextualized distance.
-    Reversed prompt (text then idiom) to respect causal masking: the
-    idiom must come after the text for its representation to be
-    influenced by it (causal model — see the chapter, section "The
-    causal constraint")."""
+    """Delta_l(i,t) for each layer l: distance between layer 0 (the raw
+    embedding, before any context mixing) and layer l, at the idiom's own
+    last-token position. Reversed prompt (text then idiom) to respect
+    causal masking: the idiom must come after the text for its
+    representation to be influenced by it (causal model — see the
+    chapter, section "The causal constraint"). Comparing layer 0 against
+    itself when l=0 makes Delta_0=0 an identity, true for idioms of any
+    token length, not a coincidence that depends on how the idiom is
+    pooled."""
     prompt = f"这句话「{text}」，可以概括为成语「{idiom}"
-    e_static = torch.from_numpy(idiom_embedding(idiom)).to(_device)
     states = last_token_states(prompt)
-    return [1 - torch.nn.functional.cosine_similarity(e_static, e, dim=0).item()
+    baseline = states[0]
+    return [1 - torch.nn.functional.cosine_similarity(baseline, e, dim=0).item()
             for e in states]
 
 
@@ -76,10 +79,10 @@ def modification_by_layer_batch(pairs: list) -> list:
     prompts = [f"这句话「{text}」，可以概括为成语「{idiom}" for idiom, text in pairs]
     states = last_token_states_batch(prompts)   # (batch, n_layers, dim)
     results = []
-    for k, (idiom, _text) in enumerate(pairs):
-        e_static = torch.from_numpy(idiom_embedding(idiom)).to(_device)
+    for k in range(states.shape[0]):
+        baseline = states[k, 0]
         results.append([
-            1 - torch.nn.functional.cosine_similarity(e_static, states[k, l], dim=0).item()
+            1 - torch.nn.functional.cosine_similarity(baseline, states[k, l], dim=0).item()
             for l in range(states.shape[1])
         ])
     return results
