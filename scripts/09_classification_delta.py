@@ -143,8 +143,24 @@ for start in range(0, len(to_evaluate), BATCH_SIZE):
 
 print(f"\nobservations: {len(rows)}\n")
 
-# --- Step 2: shape the data (X = explanatory variables, y = label) --------
+# --- Companion stat: win rate, the descriptive check AUC formalizes --------
+# For each text and each distractor, does the correct idiom have a SMALLER
+# Delta_l than the distractor? No train/test split, no model fit -- purely
+# descriptive, computed on every observation.
 data = pd.DataFrame(rows)
+print(f"{'layer':>5} {'win rate':>10}")
+for l in range(n_layers):
+    col = f"delta_{l}"
+    wins = total = 0
+    for _, group in data.groupby("text_id"):
+        target_delta = group.loc[group["y"] == 1, col].iloc[0]
+        distractor_deltas = group.loc[group["y"] == 0, col]
+        wins += int((target_delta < distractor_deltas).sum())
+        total += len(distractor_deltas)
+    print(f"{l:>5} {wins / total:>10.3f}")
+print()
+
+# --- Step 2: shape the data (X = explanatory variables, y = label) --------
 delta_columns = [f"delta_{l}" for l in range(n_layers)]
 X = data[delta_columns].to_numpy()    # shape (n_observations, n_layers)
 y = data["y"].to_numpy()              # shape (n_observations,), values in {0,1}
