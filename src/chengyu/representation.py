@@ -28,8 +28,14 @@ def modification_by_layer(idiom: str, text: str) -> list:
     prompt = f"这句话「{text}」，可以概括为成语「{idiom}"
     states = last_token_states(prompt)
     baseline = states[0]
-    return [1 - torch.nn.functional.cosine_similarity(baseline, e, dim=0).item()
-            for e in states]
+    # l=0 is forced to exactly 0.0: cosine_similarity(x,x) is not bit-exact
+    # 1.0 in floating point (a sqrt-then-square round-trip), which would
+    # otherwise leave a ~1e-7 residual that a downstream classifier can
+    # latch onto as spurious signal.
+    return [0.0] + [
+        1 - torch.nn.functional.cosine_similarity(baseline, e, dim=0).item()
+        for e in states[1:]
+    ]
 
 
 def text_state_by_layer(text: str) -> torch.Tensor:
@@ -81,8 +87,9 @@ def modification_by_layer_batch(pairs: list) -> list:
     results = []
     for k in range(states.shape[0]):
         baseline = states[k, 0]
-        results.append([
+        # l=0 forced to exactly 0.0 -- see modification_by_layer.
+        results.append([0.0] + [
             1 - torch.nn.functional.cosine_similarity(baseline, states[k, l], dim=0).item()
-            for l in range(states.shape[1])
+            for l in range(1, states.shape[1])
         ])
     return results
