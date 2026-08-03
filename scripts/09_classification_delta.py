@@ -96,19 +96,35 @@ print(f"texts evaluated: {evaluated}  (skipped: {skipped})  "
       f"observations to evaluate: {len(to_evaluate)}  (1 correct + {N_DISTRACTORS} distractors per text)")
 print(f"processing in batches of {BATCH_SIZE} ({-(-len(to_evaluate)//BATCH_SIZE)} batches)\n")
 
-# --- Step 2: evaluate Delta_l in batches -----------------------------------
+# --- Step 2: evaluate Delta_l in batches, saved incrementally -------------
+# Each batch is appended to DATA_OUT as soon as it's computed, not just held
+# in memory and written once at the end: a long run on rented/paid compute
+# can be interrupted (session timeout, disconnect, ...) partway through, and
+# losing only the last few minutes of progress is a very different cost from
+# losing the whole run. DATA_OUT is removed first so a previous run's rows
+# are never silently appended onto a new one.
+if os.path.exists(DATA_OUT):
+    os.remove(DATA_OUT)
+
 rows = []
 n_layers = None
+header_written = False
 for start in range(0, len(to_evaluate), BATCH_SIZE):
     batch = to_evaluate[start:start + BATCH_SIZE]
     pairs = [(idiom, text) for _, idiom, text, _ in batch]
     deltas = modification_by_layer_batch(pairs)   # one forward pass for the whole batch
     if n_layers is None:
         n_layers = len(deltas[0])
-    for (text_id, idiom, _text, label), delta in zip(batch, deltas):
-        rows.append({"text_id": text_id, "idiom": idiom, "y": label,
-                      **{f"delta_{l}": delta[l] for l in range(n_layers)}})
-    print(f"[{min(start + BATCH_SIZE, len(to_evaluate))}/{len(to_evaluate)}] observations processed")
+    batch_rows = [
+        {"text_id": text_id, "idiom": idiom, "y": label,
+         **{f"delta_{l}": delta[l] for l in range(n_layers)}}
+        for (text_id, idiom, _text, label), delta in zip(batch, deltas)
+    ]
+    rows.extend(batch_rows)
+    pd.DataFrame(batch_rows).to_csv(DATA_OUT, mode="a", header=not header_written, index=False)
+    header_written = True
+    print(f"[{min(start + BATCH_SIZE, len(to_evaluate))}/{len(to_evaluate)}] observations processed "
+          f"(saved to {DATA_OUT})")
 
 print(f"\nobservations: {len(rows)}\n")
 
@@ -116,8 +132,6 @@ print(f"\nobservations: {len(rows)}\n")
 # Per text/distractor: does the correct idiom have a smaller Delta_l than
 # the distractor? No train/test split, no fitted model — purely descriptive.
 data = pd.DataFrame(rows)
-data.to_csv(DATA_OUT, index=False)
-print(f"raw Delta_l saved: {DATA_OUT}\n")
 
 print(f"{'layer':>5} {'win rate':>10}")
 for l in range(n_layers):
