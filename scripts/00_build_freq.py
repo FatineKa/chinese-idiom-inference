@@ -1,5 +1,5 @@
 """00_build_freq.py — counts idiom frequency in CIP (train.csv) and
-   writes data/freq_idiomes.json. Run from the ~/projet-memoire root."""
+   writes data/idiom_freq.json. Run from the ~/projet-memoire root."""
 
 import json
 from collections import Counter
@@ -16,7 +16,7 @@ for src in df["src"]:
     for idiom in idioms_present(normalize(src), dictionary, lengths):
         count[idiom] += 1
 
-with open("data/freq_idiomes.json", "w", encoding="utf-8") as f:
+with open("data/idiom_freq.json", "w", encoding="utf-8") as f:
     json.dump(dict(count), f, ensure_ascii=False)
 
 print("idioms counted:", len(count), "| top:", count.most_common(5))

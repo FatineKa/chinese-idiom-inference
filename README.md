@@ -1,40 +1,42 @@
-# Projet mémoire : Inférence d'idiomes chinois (chengyu)
+# Mémoire project: Chinese idiom (chengyu) inference
 
-Inférer le chengyu (成语) qui résume un texte, vu comme une inférence
-bayésienne `p(idiome | texte) = p(texte | idiome) · p(idiome) / Z`, où
-Qwen fournit la vraisemblance et le prior vient des fréquences d'idiomes.
+Infer the chengyu (成语) that summarizes a text, framed as Bayesian
+inference `p(idiom | text) = p(text | idiom) · p(idiom) / Z`, where Qwen
+provides the likelihood and the prior comes from idiom usage frequencies.
 
-**Deux piliers :** l'étude géométrique des embeddings, et la sélection de
-modèle (théorie de l'apprentissage). 
+**Two pillars:** the geometric study of embeddings, and model selection
+(learning theory).
 
 ## Installation
 
 ```bash
-conda activate projet-memoire        # ou : source .venv/bin/activate
+conda activate projet-memoire        # or: source .venv/bin/activate
 pip install -e .
 ```
 
 ## Structure
 
-- `src/chengyu/` : le code (un fichier par tâche) :
-  `scoring.py`, `prior.py`, `embeddings.py`, `geometry.py`,
-  `gmm_select.py`, `mcmc.py`, `evaluation.py`
-- `scripts/` : les commandes à lancer (numérotées)
-- `data/` : données brutes et nettoyées (non versionnées)
-- `results/` : sorties (figures, tableaux)
-- `config.yaml` : réglages (modèle, K, sigma, seed)
+- `src/chengyu/`: the code (one file per task):
+  `scoring.py`, `prior.py`, `geometry.py`, `mcmc.py`, `evaluation.py`,
+  `representation.py`, `argmax.py`
+- `scripts/`: the commands to run (numbered)
+- `data/`: raw and cleaned data (not versioned)
+- `results/`: outputs (figures, tables)
+- `config.yaml`: settings (model, K, sigma, seed)
 
-## Données
+## Data
 
-ChID (texte → bon idiome) :
+ChID (text → correct idiom):
 `from datasets import load_dataset; load_dataset("thu-coai/chid")`
 
-## Démarrage
+## Getting started
 
 ```bash
-python scripts/01_test_scoring.py    # vérifie que le bon idiome gagne
+python scripts/01_test_scoring.py    # checks that the correct idiom wins
 ```
 
-## Statut
+## Status
 
-En cours : mise en place du scoring et de l'étude des embeddings.
+Bayesian scoring pipeline, exact argmax ranking, and the MCMC sampler are
+working. Current focus: the classification study (script 09) validating
+the per-layer Delta_l signal used to build an informed MCMC proposer.

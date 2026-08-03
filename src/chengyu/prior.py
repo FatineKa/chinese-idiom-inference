@@ -4,7 +4,7 @@ import json
 import math
 
 # File {idiom: occurrence count}. Built by scripts/00_build_freq.py
-with open("data/freq_idiomes.json", encoding="utf-8") as f:
+with open("data/idiom_freq.json", encoding="utf-8") as f:
     _freq = json.load(f)
 
 _total = sum(_freq.values())

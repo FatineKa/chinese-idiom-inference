@@ -41,7 +41,7 @@ if __name__ == "__main__":
     print("target:", target, "\n")
 
     # 2. 20 candidates: the target + 19 frequent idioms
-    with open("data/freq_idiomes.json", encoding="utf-8") as f:
+    with open("data/idiom_freq.json", encoding="utf-8") as f:
         freq = json.load(f)
     frequent = sorted(freq, key=freq.get, reverse=True)
     subset = [target] + [i for i in frequent if i != target][:19]
