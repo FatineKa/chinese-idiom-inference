@@ -15,7 +15,10 @@ N = 200                 # number of examples evaluated
 random.seed(0)
 
 dictionary, lengths = load_dictionary()
-idiom_list = list(dictionary)
+idiom_list = sorted(dictionary)   # sorted, not list(): set order depends on
+                        # per-process hash randomization (PYTHONHASHSEED),
+                        # which would silently break SEED-based reproducibility
+                        # of the random.sample() distractor draw below
 df = pd.read_csv("data/raw/cip/train.csv")
 
 correct_without, correct_with, evaluated, skipped = 0, 0, 0, 0

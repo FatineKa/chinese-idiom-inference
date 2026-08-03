@@ -9,8 +9,25 @@ from transformers import (  # two Hugging Face tools: AutoTokenizer (turns text 
 MODEL = os.environ.get("CHENGYU_MODEL", "Qwen/Qwen2.5-7B-Instruct")  # override with e.g. CHENGYU_MODEL="Qwen/Qwen2.5-0.5B-Instruct" for a quick CPU test
 _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 _dtype = torch.bfloat16 if _device.type == "cuda" else torch.float32  # bf16: half the memory, near-lossless precision on a recent GPU; pointless on CPU
+_4bit = os.environ.get("CHENGYU_4BIT") == "1"  # load in 4-bit (bitsandbytes NF4) to fit
+                        # a large checkpoint on a smaller GPU (e.g. a free-tier T4).
+                        # Needs CUDA. Changes the model's numerics slightly versus full
+                        # precision -- fine for a compute-constrained test, worth a note
+                        # in the chapter if used for results that get reported.
 _tok = AutoTokenizer.from_pretrained(MODEL)  # loads the model's tokenizer
-_model = AutoModelForCausalLM.from_pretrained(MODEL, dtype=_dtype).to(_device)  # loads the model into memory, on GPU if available
+if _4bit:
+    from transformers import BitsAndBytesConfig
+    _model = AutoModelForCausalLM.from_pretrained(
+        MODEL,
+        quantization_config=BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+        ),
+        device_map="auto",
+    )
+else:
+    _model = AutoModelForCausalLM.from_pretrained(MODEL, dtype=_dtype).to(_device)  # loads the model into memory, on GPU if available
 _model.eval()  # sets the model to evaluation mode
 
 @torch.no_grad()  # gradients are for training; since we're only evaluating, disabling them makes the code faster and less memory-hungry

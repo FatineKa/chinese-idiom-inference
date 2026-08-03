@@ -2,3 +2,8 @@ fastapi
 uvicorn[standard]
 torch
 transformers
+pandas
+scikit-learn
+matplotlib
+bitsandbytes
+accelerate

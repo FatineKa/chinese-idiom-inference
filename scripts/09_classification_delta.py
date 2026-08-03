@@ -47,6 +47,11 @@ from chengyu.evaluation import find_idiom, load_dictionary, normalize
 from chengyu.representation import modification_by_layer_batch
 
 FIGURE = "results/figures/09_auc_par_couche.png"
+DATA_OUT = "results/outputs/09_deltas.csv"    # raw Delta_l per candidate, saved
+                        # before any analysis so a re-run of this script or
+                        # further checks (permutation control, rogue-dimension
+                        # correction, ...) never require redoing the forward
+                        # passes just to reuse data that already exists.
 
 _n_texts_env = os.environ.get("CHENGYU_N_TEXTS")
 N_TEXTS = int(_n_texts_env) if _n_texts_env else None
@@ -64,7 +69,10 @@ BATCH_SIZE = 32         # candidates per forward pass (modification_by_layer_bat
 
 rng = random.Random(SEED)
 dictionary, lengths = load_dictionary()
-idiom_list = list(dictionary)
+idiom_list = sorted(dictionary)   # sorted, not list(): set iteration order
+                        # depends on Python's per-process hash randomization
+                        # (PYTHONHASHSEED), so a bare list() would make
+                        # SEED-based reproducibility an illusion
 df = pd.read_csv("data/raw/cip/train.csv")
 
 # --- Step 1: list the candidates to evaluate (no model call here) ---------
@@ -108,6 +116,9 @@ print(f"\nobservations: {len(rows)}\n")
 # Per text/distractor: does the correct idiom have a smaller Delta_l than
 # the distractor? No train/test split, no fitted model — purely descriptive.
 data = pd.DataFrame(rows)
+data.to_csv(DATA_OUT, index=False)
+print(f"raw Delta_l saved: {DATA_OUT}\n")
+
 print(f"{'layer':>5} {'win rate':>10}")
 for l in range(n_layers):
     col = f"delta_{l}"
@@ -150,11 +161,38 @@ for l in range(n_layers):
 
 best_layer, best_auc, _ = max(layer_results, key=lambda r: r[1])
 
-# --- Step 4bis: plot AUC(layer) --------------------------------------------
+# --- Step 4bis: permutation-label control, per layer (Hewitt & Liang, 2019) -
+# Same Delta_l values (X unchanged, no new forward passes) -- only the
+# labels change: within each text's group of 1+N_DISTRACTORS candidates,
+# the "correct" one is reassigned uniformly at random, independent of
+# which candidate actually is correct. Delta_l can then carry no real
+# information about y_perm by construction, so AUC here should collapse
+# to ~0.5. If it doesn't, the pipeline (not Delta_l) is producing the
+# apparent signal -- e.g. a leak in the grouped split -- and the AUC
+# values measured above on the real labels cannot be trusted either.
+perm_rng = random.Random(SEED + 1)
+y_perm = y.copy()
+for _, group in data.groupby("text_id"):
+    idx = group.index.to_numpy()
+    y_perm[idx] = 0
+    y_perm[perm_rng.choice(idx.tolist())] = 1
+
+print(f"\n{'layer':>7} {'perm AUC':>9}")
+perm_aucs = []
+for l in range(n_layers):
+    clf = LogisticRegression()
+    clf.fit(X[i_train, l:l+1], y_perm[i_train])
+    proba = clf.predict_proba(X[i_test, l:l+1])[:, 1]
+    auc = roc_auc_score(y_perm[i_test], proba)
+    perm_aucs.append(auc)
+    print(f"{l:>7} {auc:>9.3f}")
+
+# --- Step 4ter: plot AUC(layer), real vs. permuted-label control ----------
 # One curve over all observations pooled together. The full AUC(l) line is
 # what matters; the marked point is a landmark, not the only thing to read
 # — a broad, stable bump across neighboring layers is more credible than an
-# isolated spike.
+# isolated spike. The permuted curve should hug the chance line: if it
+# doesn't, that undermines the real curve too (Step 6 below).
 layers = [l for l, _, _ in layer_results]
 aucs = [a for _, a, _ in layer_results]
 
@@ -163,6 +201,9 @@ ax.axhline(0.5, color="#93a4b8", linestyle="--", linewidth=1,
            label="chance (AUC = 0.5)")
 ax.plot(layers, aucs, color="#1f5c8a", linewidth=2, marker="o",
         markersize=4, label="AUC by layer")
+ax.plot(layers, perm_aucs, color="#c0783c", linewidth=1.5, marker="o",
+        markersize=3, linestyle="--", alpha=0.85,
+        label="permuted-label control")
 ax.scatter([best_layer], [best_auc], color="#1f5c8a", s=70,
            zorder=5, edgecolor="white", linewidth=1)
 ax.annotate(f"layer {best_layer}\nAUC={best_auc:.3f}",
@@ -199,6 +240,23 @@ print(f"\nmultivariate model (all {n_layers} layers together): "
 coeffs = sorted(enumerate(clf_multi.coef_[0]), key=lambda c: -abs(c[1]))[:5]
 print("most influential layers in the multivariate model (largest |weight|):",
       ", ".join(f"layer {l} (weight={c:+.2f})" for l, c in coeffs))
+
+# --- Step 6: permutation-label control task, multivariate model ----------
+# Reuses y_perm from Step 4bis (same random relabeling, one per text).
+clf_multi_perm = LogisticRegression(max_iter=1000)
+clf_multi_perm.fit(X[i_train], y_perm[i_train])
+proba_multi_perm = clf_multi_perm.predict_proba(X[i_test])[:, 1]
+auc_multi_perm = roc_auc_score(y_perm[i_test], proba_multi_perm)
+best_perm_auc = max(perm_aucs)
+print(f"\nmultivariate model on permuted labels: AUC = {auc_multi_perm:.3f}")
+print(f"""
+Control task reading: best permuted-label AUC = {best_perm_auc:.3f},
+multivariate permuted-label AUC = {auc_multi_perm:.3f} (both should be close
+to 0.5). If either is as high as the corresponding real-label AUC above,
+that is evidence of a leak or bug in the evaluation pipeline, not of
+Delta_l carrying information -- investigate before trusting the real
+AUC values.
+""")
 
 print(f"""
 Summary:

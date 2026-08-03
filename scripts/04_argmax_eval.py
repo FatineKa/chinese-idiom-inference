@@ -8,7 +8,8 @@ from chengyu.prior import log_prior
 
 N = 50    # full dictionary => expensive: start small
 dictionary, lengths = load_dictionary()
-idiom_list = list(dictionary)
+idiom_list = sorted(dictionary)   # sorted, not list(): set order depends on
+                        # per-process hash randomization (PYTHONHASHSEED)
 df = pd.read_csv("data/raw/cip/train.csv")
 
 t1_without = t1_with = t10_without = t10_with = evaluated = skipped = 0
