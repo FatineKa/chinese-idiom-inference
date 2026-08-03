@@ -52,6 +52,10 @@ DATA_OUT = "results/outputs/09_deltas.csv"    # raw Delta_l per candidate, saved
                         # further checks (permutation control, rogue-dimension
                         # correction, ...) never require redoing the forward
                         # passes just to reuse data that already exists.
+os.makedirs(os.path.dirname(FIGURE), exist_ok=True)
+os.makedirs(os.path.dirname(DATA_OUT), exist_ok=True)
+# results/ is gitignored (not versioned), so a fresh clone doesn't have these
+# directories at all -- create them rather than fail partway through a run.
 
 _n_texts_env = os.environ.get("CHENGYU_N_TEXTS")
 N_TEXTS = int(_n_texts_env) if _n_texts_env else None
