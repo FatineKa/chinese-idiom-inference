@@ -1,7 +1,10 @@
 """10_compare_proposers.py — does the informed proposer actually mix
 faster than uniform? Runs both on the same subset, text, and step
 budget, then compares their visit frequencies against the exact
-posterior and their acceptance rates.
+posterior and their acceptance rates, aggregated over CHENGYU_N_TEXTS
+texts -- a single text is not enough to tell whether the informed
+proposer helps in general, only whether it happened to help (or not)
+for that one example.
 
 Requires CHENGYU_LAYER: the layer validated by 09_classification_delta.py.
 There is no safe default here -- an unvalidated layer is not meaningfully
@@ -33,6 +36,10 @@ LAYER = int(_layer_env)
 
 N_STEPS = int(os.environ.get("CHENGYU_N_STEPS", "20000"))
 TEMPERATURE = float(os.environ.get("CHENGYU_TEMPERATURE", "1.0"))
+N_TEXTS = int(os.environ.get("CHENGYU_N_TEXTS", "10"))
+VERBOSE = N_TEXTS == 1   # print the full per-idiom table only for a single text;
+                          # with several texts, that much output per text is noise --
+                          # the point becomes the aggregate, not any one example.
 
 
 def acceptance_rate(trace):
@@ -44,51 +51,83 @@ def acceptance_rate(trace):
     return moves / (len(trace) - 1)
 
 
-def compare(text, subset, n_steps=N_STEPS):
+def total_variation(exact, counts, n):
+    """Distance in [0,1] between the exact posterior and a chain's empirical
+    visit frequencies after burn-in -- 0 means the chain's marginal exactly
+    matches the target at this step budget, 1 means they share no mass.
+    Unlike acceptance rate (a proxy for mixing speed), this measures the
+    thing we actually care about: how close the chain has gotten to the
+    true posterior in the steps it was given."""
+    return 0.5 * sum(abs(exact[i] - counts[i] / n) for i in exact)
+
+
+def compare(text, subset, n_steps=N_STEPS, verbose=VERBOSE):
     w = {i: math.exp(log_weight(text, i)) for i in subset}
     Z = sum(w.values())
     exact = {i: w[i] / Z for i in subset}      # EXACT posterior
 
+    progress = max(1, n_steps // 10) if verbose else None
+
     uniform = uniform_proposer(subset)
     trace_u = metropolis_hastings(text, subset[0], uniform, n_steps,
-                                   progress_every=max(1, n_steps // 10))
+                                   progress_every=progress)
     trace_u_burned = trace_u[n_steps // 10:]
 
     subset_embeddings = embeddings(subset)
     informed = text_proposer(subset, text, subset_embeddings, LAYER,
                               temperature=TEMPERATURE)
     trace_i = metropolis_hastings(text, subset[0], informed, n_steps,
-                                   progress_every=max(1, n_steps // 10))
+                                   progress_every=progress)
     trace_i_burned = trace_i[n_steps // 10:]
 
     c_u = Counter(trace_u_burned)
     c_i = Counter(trace_i_burned)
-    print(f"\n{'idiom':<8} {'exact':>8} {'uniform':>8} {'informed':>8}")
-    for i in sorted(subset, key=lambda x: -exact[x]):
-        print(f"{i:<8} {exact[i]:>8.3f} {c_u[i] / len(trace_u_burned):>8.3f} "
-              f"{c_i[i] / len(trace_i_burned):>8.3f}")
 
-    print(f"\nacceptance rate -- uniform: {acceptance_rate(trace_u):.1%}  "
-          f"informed: {acceptance_rate(trace_i):.1%}")
+    if verbose:
+        print(f"\n{'idiom':<8} {'exact':>8} {'uniform':>8} {'informed':>8}")
+        for i in sorted(subset, key=lambda x: -exact[x]):
+            print(f"{i:<8} {exact[i]:>8.3f} {c_u[i] / len(trace_u_burned):>8.3f} "
+                  f"{c_i[i] / len(trace_i_burned):>8.3f}")
+
+    return {
+        "acc_uniform": acceptance_rate(trace_u),
+        "acc_informed": acceptance_rate(trace_i),
+        "tvd_uniform": total_variation(exact, c_u, len(trace_u_burned)),
+        "tvd_informed": total_variation(exact, c_i, len(trace_i_burned)),
+    }
 
 
 if __name__ == "__main__":
-    # 1. a clean text and its target
     df = pd.read_csv("data/raw/cip/train.csv")
     dictionary, lengths = load_dictionary()
-    for src, dst in zip(df["src"], df["dst"]):
-        target = find_idiom(src, dst, dictionary, lengths)
-        if target:
-            break
-    text = normalize(dst)
-    print("text  :", text)
-    print("target:", target, "\n")
 
-    # 2. 20 candidates: the target + 19 frequent idioms (same subset as 02)
+    # 20 candidates per text: its target + 19 frequent idioms (same subset
+    # style as 02), frequency list shared across texts, target excluded so
+    # the subset is always exactly 20.
     with open("data/idiom_freq.json", encoding="utf-8") as f:
         freq = json.load(f)
     frequent = sorted(freq, key=freq.get, reverse=True)
-    subset = [target] + [i for i in frequent if i != target][:19]
 
-    # 3. uniform vs informed, same text, same subset, same step budget
-    compare(text, subset, n_steps=N_STEPS)
+    results = []
+    for src, dst in zip(df["src"], df["dst"]):
+        if len(results) >= N_TEXTS:
+            break
+        target = find_idiom(src, dst, dictionary, lengths)
+        if not target:
+            continue
+        text = normalize(dst)
+        subset = [target] + [i for i in frequent if i != target][:19]
+
+        print(f"\n=== text {len(results) + 1}/{N_TEXTS} -- target: {target} ===")
+        metrics = compare(text, subset, n_steps=N_STEPS)
+        print(f"acceptance -- uniform: {metrics['acc_uniform']:.1%}  "
+              f"informed: {metrics['acc_informed']:.1%}  |  "
+              f"TVD to exact -- uniform: {metrics['tvd_uniform']:.3f}  "
+              f"informed: {metrics['tvd_informed']:.3f}")
+        results.append(metrics)
+
+    print(f"\n=== aggregate over {len(results)} texts "
+          f"(layer={LAYER}, T={TEMPERATURE}, n_steps={N_STEPS}) ===")
+    for key in ("acc_uniform", "acc_informed", "tvd_uniform", "tvd_informed"):
+        vals = [r[key] for r in results]
+        print(f"{key:<14} mean = {sum(vals) / len(vals):.3f}")
