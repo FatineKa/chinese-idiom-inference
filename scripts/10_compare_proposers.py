@@ -32,6 +32,7 @@ if _layer_env is None:
 LAYER = int(_layer_env)
 
 N_STEPS = int(os.environ.get("CHENGYU_N_STEPS", "20000"))
+TEMPERATURE = float(os.environ.get("CHENGYU_TEMPERATURE", "1.0"))
 
 
 def acceptance_rate(trace):
@@ -54,7 +55,8 @@ def compare(text, subset, n_steps=N_STEPS):
     trace_u_burned = trace_u[n_steps // 10:]
 
     subset_embeddings = embeddings(subset)
-    informed = text_proposer(subset, text, subset_embeddings, LAYER)
+    informed = text_proposer(subset, text, subset_embeddings, LAYER,
+                              temperature=TEMPERATURE)
     trace_i = metropolis_hastings(text, subset[0], informed, n_steps,
                                    progress_every=max(1, n_steps // 10))
     trace_i_burned = trace_i[n_steps // 10:]

@@ -60,9 +60,9 @@ def text_proposer(idioms: list, text: str, static_embeddings: np.ndarray,
     weights /= weights.sum()
     index = {idiom: k for k, idiom in enumerate(idioms)}
 
-    print(f"informed proposer built: layer {layer}, {len(idioms)} idioms, "
-          f"weight min={weights.min():.2e} max={weights.max():.2e} "
-          f"(most favored idiom: {idioms[weights.argmax()]})")
+    print(f"informed proposer built: layer {layer}, T={temperature}, "
+          f"{len(idioms)} idioms, weight min={weights.min():.2e} "
+          f"max={weights.max():.2e} (most favored idiom: {idioms[weights.argmax()]})")
 
     def propose(current, rng):
         idx = rng.choices(range(len(idioms)), weights=weights.tolist())[0]
