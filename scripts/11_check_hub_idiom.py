@@ -124,3 +124,40 @@ Reading this:
   centered std: consistently ranked above the pack, for reasons that don't
   depend on what the text says.
 """)
+
+# --- Part 3: does per-coordinate standardization kill the hub effect? -----
+# Rogue dimensions (Timkey & van Schijndel, 2021) are a few coordinates with
+# outsized variance across a whole population of vectors, dominating the dot
+# product behind cosine similarity regardless of what the other coordinates
+# encode. Standardizing each coordinate (subtract its mean, divide by its
+# std) removes that -- computed separately for each side's own population,
+# since static embeddings and layer-11 text states are different
+# distributions: static side from the full 31,113-idiom dictionary (cheap,
+# no forward pass), text-state side from the N_TEXTS sample already
+# collected in Part 1 -- no extra forward passes needed for this part.
+print(f"computing per-coordinate statistics for standardization "
+      f"({len(idiom_list)} idioms, {N_TEXTS} text states)...")
+X_all = embeddings(idiom_list)
+mu_static, sigma_static = X_all.mean(axis=0), X_all.std(axis=0) + 1e-8
+text_states_arr = np.stack(text_states)
+mu_text = text_states_arr.mean(axis=0)
+sigma_text = text_states_arr.std(axis=0) + 1e-8
+
+static_std = {idiom: (static[idiom] - mu_static) / sigma_static
+              for idiom in idioms}
+text_states_std = [(v - mu_text) / sigma_text for v in text_states]
+
+cos_matrix_std = np.array([[cos(static_std[idiom], v) for v in text_states_std]
+                            for idiom in idioms])
+report("Part 3: same comparison as Part 1, but with per-coordinate "
+       "standardization applied first", cos_matrix_std)
+
+print(f"""
+Compare Part 3's centered mean/std for {CANDIDATES} against Part 1's:
+- If standardization collapses the gap (candidates no longer clearly on
+  top, relative to the baseline idioms), the dominance was a rogue-dimension
+  artifact, and standardizing before computing s_ell would be a real fix
+  for the informed proposer.
+- If the gap survives standardization, something else is going on --
+  standardization is not the fix, and the cause needs to be found elsewhere.
+""")
