@@ -89,17 +89,31 @@ def get_static_std(idiom):
     return static_cache[idiom]
 
 
+# Resume support: a run this long (full corpus, ~90k texts) is exactly the
+# kind of job a Colab disconnect interrupts partway through. If DATA_OUT
+# already has results (from an earlier, interrupted run), skip texts
+# already complete instead of re-paying their forward-pass cost -- this
+# only helps if results/ is NOT on the ephemeral local disk (symlink it to
+# Drive, same as data/, or this file dies with the runtime anyway).
+already_done = set()
+header_written = False
 if os.path.exists(DATA_OUT):
-    os.remove(DATA_OUT)
+    prior = pd.read_csv(DATA_OUT)
+    counts = prior.groupby("text_id").size()
+    already_done = set(counts[counts == 1 + N_DISTRACTORS].index)
+    header_written = True
+    print(f"resuming: {len(already_done)} texts already complete in "
+          f"{DATA_OUT}, skipping them")
 
-rows = []
 n_layers = None
 LAYERS = None            # layers actually used for s_ell -- excludes 0
 text_state_stats = None  # {layer: (mu, sigma)}, loaded once
-header_written = False
 n_texts_done = 0
+n_remaining = evaluated - len(already_done)
 
 for text_id, group in groupby(to_evaluate, key=lambda row: row[0]):
+    if text_id in already_done:
+        continue
     group = list(group)
     text = group[0][2]
     all_states = text_state_by_layer(text).cpu().numpy()   # (n_layers+1, dim)
@@ -128,19 +142,27 @@ for text_id, group in groupby(to_evaluate, key=lambda row: row[0]):
         }
         batch_rows.append({"text_id": text_id, "idiom": idiom, "y": label,
                             **{f"s_{l}": s_by_layer[l] for l in LAYERS}})
-    rows.extend(batch_rows)
     pd.DataFrame(batch_rows).to_csv(DATA_OUT, mode="a", header=not header_written,
                                      index=False)
     header_written = True
     n_texts_done += 1
     if n_texts_done % 50 == 0:
-        print(f"[{n_texts_done}/{evaluated}] texts processed "
-              f"({len(rows)} observations, saved to {DATA_OUT})")
+        print(f"[{n_texts_done}/{n_remaining} new, "
+              f"{len(already_done) + n_texts_done}/{evaluated} total] "
+              f"texts processed (saved to {DATA_OUT})")
 
-print(f"\nobservations: {len(rows)}\n")
+# Reload from disk rather than using only this run's in-memory rows: a
+# resumed run's earlier texts exist only in the file, not in this
+# process's memory.
+data = pd.read_csv(DATA_OUT)
+if LAYERS is None:
+    # Every remaining text was already done -- the loop body never ran, so
+    # LAYERS/n_layers were never set. Infer them from the file instead.
+    LAYERS = sorted(int(c.split("_")[1]) for c in data.columns if c.startswith("s_"))
+    n_layers = max(LAYERS) + 1
+print(f"\nobservations: {len(data)}\n")
 
 # --- Companion stat: win rate, the descriptive check AUC formalizes --------
-data = pd.DataFrame(rows)
 print(f"{'layer':>5} {'win rate':>10}")
 for l in LAYERS:
     col = f"s_{l}"
