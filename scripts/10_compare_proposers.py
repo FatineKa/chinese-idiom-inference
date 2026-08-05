@@ -34,6 +34,11 @@ LAYER = int(_layer_env)
 N_STEPS = int(os.environ.get("CHENGYU_N_STEPS", "20000"))
 TEMPERATURE = float(os.environ.get("CHENGYU_TEMPERATURE", "1.0"))
 N_TEXTS = int(os.environ.get("CHENGYU_N_TEXTS", "10"))
+STANDARDIZE = os.environ.get("CHENGYU_STANDARDIZE") == "1"   # per-coordinate
+                          # standardization before cosine similarity -- see
+                          # mcmc.text_proposer and scripts/11_check_hub_idiom.py
+                          # (Part 3). Requires scripts/12_fit_text_state_stats.py
+                          # to have been run for CHENGYU_LAYER first.
 VERBOSE = N_TEXTS == 1   # print the full per-idiom table only for a single text;
                           # with several texts, that much output per text is noise --
                           # the point becomes the aggregate, not any one example.
@@ -79,7 +84,7 @@ def compare(text, subset, n_steps=N_STEPS, verbose=VERBOSE):
 
     subset_embeddings = embeddings(subset)
     informed = text_proposer(subset, text, subset_embeddings, LAYER,
-                              temperature=TEMPERATURE)
+                              temperature=TEMPERATURE, standardize=STANDARDIZE)
     trace_i = metropolis_hastings(text, subset[0], informed, n_steps,
                                    progress_every=progress)
     trace_i_burned = trace_i[n_steps // 10:]
@@ -149,7 +154,8 @@ if __name__ == "__main__":
         results.append(metrics)
 
     print(f"\n=== aggregate over {len(results)} texts "
-          f"(layer={LAYER}, T={TEMPERATURE}, n_steps={N_STEPS}) ===")
+          f"(layer={LAYER}, T={TEMPERATURE}, n_steps={N_STEPS}, "
+          f"standardize={STANDARDIZE}) ===")
     for key in ("acc_uniform", "acc_informed", "tvd_uniform", "tvd_informed",
                 "gap_loglik", "gap_logprior"):
         vals = [r[key] for r in results]

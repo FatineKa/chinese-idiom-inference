@@ -1,6 +1,9 @@
 """representation.py — modification signal (static vs. contextualized),
 layer by layer. A single forward pass computes every layer at once
 (output_hidden_states costs nothing extra)."""
+import os
+
+import numpy as np
 import torch
 
 from chengyu.scoring import _device, _model, _tok
@@ -45,6 +48,25 @@ def text_state_by_layer(text: str) -> torch.Tensor:
     (mcmc.text_proposer)."""
     prompt = f"这句话「{text}」，可以概括为成语「"
     return last_token_states(prompt)
+
+
+def load_text_state_stats(layer: int):
+    """Load precomputed per-coordinate mean/std of layer-`layer` text
+    states (scripts/12_fit_text_state_stats.py), for standardizing before
+    cosine similarity in mcmc.text_proposer -- see
+    geometry.static_embedding_stats for why. Precomputed to disk rather
+    than computed in-process like the static-embedding stats: each text
+    state needs a real forward pass, so estimating this from many texts is
+    real GPU cost that should happen once, not on every text_proposer
+    call."""
+    path = f"data/text_state_stats_layer{layer}.npz"
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"{path} not found. Run scripts/12_fit_text_state_stats.py "
+            f"with CHENGYU_LAYER={layer} first."
+        )
+    data = np.load(path)
+    return data["mu"], data["sigma"] + 1e-8
 
 
 @torch.no_grad()

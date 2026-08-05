@@ -21,6 +21,28 @@ def embeddings(idioms: list) -> np.ndarray:
     return np.stack([idiom_embedding(i) for i in idioms])
 
 
+_static_stats_cache = None
+
+
+def static_embedding_stats():
+    """Per-coordinate mean and std of the full dictionary's static
+    embeddings, for standardizing before cosine similarity -- removes the
+    rogue-dimension effect (Timkey & van Schijndel, 2021) confirmed
+    empirically in scripts/11_check_hub_idiom.py (Part 3: one idiom's
+    dominant cosine similarity to every text state collapsed entirely once
+    standardized). Cheap (embedding-table lookups, no forward pass), so
+    computed directly here rather than precomputed to disk like the
+    text-state stats (representation.py) -- cached in-process since every
+    caller needs the same values."""
+    global _static_stats_cache
+    if _static_stats_cache is None:
+        from chengyu.evaluation import load_dictionary
+        dictionary, _ = load_dictionary()
+        X = embeddings(sorted(dictionary))
+        _static_stats_cache = (X.mean(axis=0), X.std(axis=0) + 1e-8)
+    return _static_stats_cache
+
+
 def reduce(X: np.ndarray, p: int):
     """PCA down to p dimensions. Returns (X_reduced, pca); pca.explained_variance_ratio_
     gives the fraction of variance retained."""
