@@ -18,12 +18,9 @@ import pandas as pd
 
 from chengyu.evaluation import find_idiom, load_dictionary, normalize
 from chengyu.geometry import embeddings
-from chengyu.mcmc import (
-    log_weight,
-    metropolis_hastings,
-    text_proposer,
-    uniform_proposer,
-)
+from chengyu.mcmc import metropolis_hastings, text_proposer, uniform_proposer
+from chengyu.prior import log_prior
+from chengyu.scoring import score_summary
 
 _layer_env = os.environ.get("CHENGYU_LAYER")
 if _layer_env is None:
@@ -62,7 +59,14 @@ def total_variation(exact, counts, n):
 
 
 def compare(text, subset, n_steps=N_STEPS, verbose=VERBOSE):
-    w = {i: math.exp(log_weight(text, i)) for i in subset}
+    # log_weight = likelihood + prior; kept separate here (instead of just
+    # calling mcmc.log_weight) so the breakdown can be printed -- the 19
+    # non-target candidates are the most frequent idioms overall, so it's
+    # worth seeing directly whether the prior or the likelihood is what
+    # actually drives the exact posterior, rather than assuming.
+    likelihood = {i: score_summary(text, i) for i in subset}
+    prior = {i: log_prior(i) for i in subset}
+    w = {i: math.exp(likelihood[i] + prior[i]) for i in subset}
     Z = sum(w.values())
     exact = {i: w[i] / Z for i in subset}      # EXACT posterior
 
@@ -84,9 +88,11 @@ def compare(text, subset, n_steps=N_STEPS, verbose=VERBOSE):
     c_i = Counter(trace_i_burned)
 
     if verbose:
-        print(f"\n{'idiom':<8} {'exact':>8} {'uniform':>8} {'informed':>8}")
+        print(f"\n{'idiom':<8} {'loglik':>9} {'logprior':>9} {'exact':>8} "
+              f"{'uniform':>8} {'informed':>8}")
         for i in sorted(subset, key=lambda x: -exact[x]):
-            print(f"{i:<8} {exact[i]:>8.3f} {c_u[i] / len(trace_u_burned):>8.3f} "
+            print(f"{i:<8} {likelihood[i]:>9.2f} {prior[i]:>9.2f} {exact[i]:>8.3f} "
+                  f"{c_u[i] / len(trace_u_burned):>8.3f} "
                   f"{c_i[i] / len(trace_i_burned):>8.3f}")
 
     return {
