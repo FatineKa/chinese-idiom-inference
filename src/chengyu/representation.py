@@ -63,7 +63,7 @@ def load_text_state_stats(layer: int):
     if not os.path.exists(path):
         raise FileNotFoundError(
             f"{path} not found. Run scripts/12_fit_text_state_stats.py "
-            f"with CHENGYU_LAYER={layer} first."
+            f"first (fits every layer in one pass, no CHENGYU_LAYER needed)."
         )
     data = np.load(path)
     return data["mu"], data["sigma"] + 1e-8

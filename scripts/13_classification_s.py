@@ -41,8 +41,15 @@ from chengyu.evaluation import find_idiom, load_dictionary, normalize
 from chengyu.geometry import embeddings, static_embedding_stats
 from chengyu.representation import load_text_state_stats, text_state_by_layer
 
-FIGURE = "results/figures/13_auc_par_couche_s.png"
-DATA_OUT = "results/outputs/13_s_scores.csv"
+STANDARDIZE = os.environ.get("CHENGYU_STANDARDIZE", "1") == "1"   # default on
+                        # (the validated fix), set CHENGYU_STANDARDIZE=0 for
+                        # a direct comparison against Delta_l's own study,
+                        # which never used standardization either -- same
+                        # numbers, different output files so the two never
+                        # collide or corrupt each other's resume data.
+_suffix = "" if STANDARDIZE else "_nostd"
+FIGURE = f"results/figures/13_auc_par_couche_s{_suffix}.png"
+DATA_OUT = f"results/outputs/13_s_scores{_suffix}.csv"
 os.makedirs(os.path.dirname(FIGURE), exist_ok=True)
 os.makedirs(os.path.dirname(DATA_OUT), exist_ok=True)
 
@@ -74,13 +81,18 @@ for text_id, (src, dst) in enumerate(zip(df["src"], df["dst"])):
         to_evaluate.append((text_id, idiom, text, label))
 
 evaluated = len(to_evaluate) // (1 + N_DISTRACTORS)
+print(f"standardize={STANDARDIZE}  |  output: {DATA_OUT}")
 print(f"texts evaluated: {evaluated}  (skipped: {skipped})  "
       f"observations to evaluate: {len(to_evaluate)}  "
       f"(1 correct + {N_DISTRACTORS} distractors per text)")
 
 # --- Step 2: one forward pass PER TEXT, reused across its candidates ------
-mu_static, sigma_static = static_embedding_stats()
-static_cache = {}   # idiom -> standardized static embedding, computed once
+if STANDARDIZE:
+    mu_static, sigma_static = static_embedding_stats()
+else:
+    mu_static, sigma_static = 0.0, 1.0   # no-op: (x-0)/1 = x, reuses the
+                        # same code path instead of duplicating it
+static_cache = {}   # idiom -> (standardized) static embedding, computed once
 
 
 def get_static_std(idiom):
@@ -128,7 +140,10 @@ for text_id, group in groupby(to_evaluate, key=lambda row: row[0]):
         # the IDIOM's own state (varies by candidate), s_ell's layer-0 text
         # state is structurally uninformative, not just weak.
         LAYERS = list(range(1, n_layers))
-        text_state_stats = {l: load_text_state_stats(l) for l in LAYERS}
+        if STANDARDIZE:
+            text_state_stats = {l: load_text_state_stats(l) for l in LAYERS}
+        else:
+            text_state_stats = {l: (0.0, 1.0) for l in LAYERS}   # no-op
 
     text_states_std = {l: (all_states[l] - text_state_stats[l][0]) / text_state_stats[l][1]
                         for l in LAYERS}
@@ -155,6 +170,15 @@ for text_id, group in groupby(to_evaluate, key=lambda row: row[0]):
 # resumed run's earlier texts exist only in the file, not in this
 # process's memory.
 data = pd.read_csv(DATA_OUT)
+# Defends against a disconnect landing mid-write for one text: that text
+# wouldn't be in already_done (its row count wouldn't match), so it gets
+# reprocessed and appended again -- keep only the latest write per
+# (text_id, idiom) so a stale partial write never silently duplicates rows.
+n_before = len(data)
+data = data.drop_duplicates(subset=["text_id", "idiom"], keep="last")
+if len(data) != n_before:
+    print(f"dropped {n_before - len(data)} duplicate rows from a partial "
+          f"write before an interruption")
 if LAYERS is None:
     # Every remaining text was already done -- the loop body never ran, so
     # LAYERS/n_layers were never set. Infer them from the file instead.
@@ -249,7 +273,8 @@ ax.axvline(11, color="#9a9a9a", linestyle=":", linewidth=1,
 ax.set_xlabel("layer l (0 = embeddings)")
 ax.set_ylabel("AUC (test, grouped by text)")
 ax.set_title(f"Separability of s_ell(i,t) by layer -- n={evaluated} texts, "
-             f"{N_DISTRACTORS} distractors/text (standardized)")
+             f"{N_DISTRACTORS} distractors/text "
+             f"({'standardized' if STANDARDIZE else 'not standardized'})")
 ax.set_ylim(0.0, 1.0)
 ax.spines["top"].set_visible(False)
 ax.spines["right"].set_visible(False)
