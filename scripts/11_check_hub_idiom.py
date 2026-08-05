@@ -1,28 +1,35 @@
 """11_check_hub_idiom.py — is a candidate idiom's dominance in the informed
 proposer (script 10) a real per-text signal, or a hub artifact?
 
-Two independent checks, for two different hub mechanisms:
+Two independent checks, run against the SAME random sample of texts so
+results are directly comparable, and each reported both raw and
+per-text-centered (subtract that text's mean across all idioms tested).
+Centering matters because both the informed proposer (a softmax over
+candidates for one text) and the exact posterior (normalized over
+candidates for one text) only ever compare idioms RELATIVE TO EACH OTHER
+within a fixed text -- never in absolute terms across different texts. Raw
+means mix in text-to-text variance (a longer or harder text shifts every
+idiom's score together) that has nothing to do with any idiom being a hub;
+centering removes it and isolates the idiom-specific effect.
 
-Part 1 (embedding space): cosine similarity is scale-invariant (mcmc.py's
-text_proposer divides by both norms), so an unusually large embedding norm
-cannot by itself explain why an idiom is disproportionately favored -- that
-was the wrong diagnostic. The actual rogue-dimension mechanism (Timkey &
-van Schijndel, 2021) is directional: a few high-variance dimensions that
-most embeddings partially share, inflating cosine similarity between
-otherwise-unrelated vectors. A real hub therefore has unusually high average
-cosine similarity to a broad, random sample of other idioms, and to the
-centroid of the whole embedding cloud -- not necessarily a large norm.
-Cheap: static embeddings are embedding-table lookups, no forward pass.
+Part 1 (embedding space): does e_static(idiom) sit in a generically
+high-cosine-similarity direction relative to LAYER-CHENGYU_LAYER TEXT
+STATES -- the actual comparison mcmc.py's text_proposer makes -- rather
+than relative to other idioms' embeddings (a different, less relevant
+space; an earlier version of this script tested that by mistake). One
+forward pass per TEXT (not per idiom), since a text's state doesn't depend
+on which candidate it gets compared against afterward.
 
-Part 2 (likelihood space): a separate hypothesis for why the SAME idioms
-keep winning the exact posterior across unrelated texts in script 10 --
-some idioms may be generic/broadly-applicable enough that Qwen assigns them
-decent score_summary(text, idiom) across many different texts, independent
-of actual fit, rather than sharply distinguishing correct from incorrect.
-Checked by comparing mean and spread of score_summary across a random text
-sample -- unlike Part 1, this needs a real forward pass per (text, idiom)
-pair, since score_summary depends on inserting the candidate into the prompt.
+Part 2 (likelihood space): does score_summary(text, idiom) run generically
+higher for some idioms across many different, unrelated texts -- Qwen
+treating them as broadly-applicable regardless of actual fit? One forward
+pass per (text, idiom) pair, since score_summary requires inserting the
+candidate into the prompt.
+
+Requires CHENGYU_LAYER (Part 1 needs a depth to read the text state at;
+use the layer validated by 09_classification_delta.py, same as script 10).
 """
+import os
 import random
 
 import numpy as np
@@ -30,96 +37,90 @@ import pandas as pd
 
 from chengyu.evaluation import load_dictionary, normalize
 from chengyu.geometry import embeddings
+from chengyu.representation import text_state_by_layer
 from chengyu.scoring import score_summary
 
+_layer_env = os.environ.get("CHENGYU_LAYER")
+if _layer_env is None:
+    raise SystemExit(
+        "CHENGYU_LAYER is not set. Pick the layer validated by "
+        "09_classification_delta.py's AUC-by-layer study, then run:\n"
+        "  CHENGYU_LAYER=<n> python scripts/11_check_hub_idiom.py"
+    )
+LAYER = int(_layer_env)
+
 SEED = 0
-N_SAMPLE = 1000        # random idioms to compare against, per candidate
+N_TEXTS = 30
 CANDIDATES = ["肆无忌惮", "无动于衷"]   # the two idioms that kept dominating
                         # in script 10's runs -- checked together so the
                         # "most favored idiom" isn't judged against nothing
 
-
-def cos(u, v):
-    return (u @ v.T) / (np.linalg.norm(u, axis=-1, keepdims=True)
-                         * np.linalg.norm(v, axis=-1))
-
-
 rng = random.Random(SEED)
 dictionary, _ = load_dictionary()
 idiom_list = sorted(dictionary)
-print(f"dictionary size: {len(idiom_list)}")
-
-print("computing static embeddings for the full dictionary "
-      "(embedding-table lookups, no forward pass)...")
-X = embeddings(idiom_list)                     # (N, dim)
-norms = np.linalg.norm(X, axis=1)
-centroid = X.mean(axis=0)
-
-index = {idiom: k for k, idiom in enumerate(idiom_list)}
-sample_idx = rng.sample(range(len(idiom_list)), N_SAMPLE)
-X_sample = X[sample_idx]
-
-print(f"\nnorm percentiles over the full dictionary: "
-      f"p50={np.percentile(norms, 50):.3f} "
-      f"p90={np.percentile(norms, 90):.3f} "
-      f"p99={np.percentile(norms, 99):.3f} "
-      f"max={norms.max():.3f}")
-
-# baseline: a few random idioms, for comparison -- is CANDIDATES actually
-# unusual, or does every idiom look like this?
 baseline = rng.sample(idiom_list, 5)
+idioms = CANDIDATES + baseline
 
-print(f"\n{'idiom':<10} {'norm':>8} {'norm pct':>9} "
-      f"{'mean cos to sample':>20} {'cos to centroid':>17}")
-for idiom in CANDIDATES + baseline:
-    k = index[idiom]
-    v = X[k]
-    norm_pct = (norms < norms[k]).mean() * 100
-    mean_cos_sample = cos(v[None, :], X_sample).mean()
-    cos_centroid = cos(v[None, :], centroid[None, :]).item()
-    tag = " <-- candidate" if idiom in CANDIDATES else ""
-    print(f"{idiom:<10} {norms[k]:>8.3f} {norm_pct:>8.1f}% "
-          f"{mean_cos_sample:>20.4f} {cos_centroid:>17.4f}{tag}")
-
-print(f"""
-Reading this:
-- 'norm' / 'norm pct': included for completeness, but norm does NOT explain
-  cosine-similarity dominance (cosine is scale-invariant) -- don't over-read this column.
-- 'mean cos to sample': average cosine similarity to {N_SAMPLE} random idioms.
-  If a candidate's value is far above the baseline idioms', it is unusually
-  similar to *everything* -- a hub, not a text-specific match.
-- 'cos to centroid': cosine similarity to the mean of all {len(idiom_list)}
-  embeddings. A hub aligns strongly with this shared direction; an idiom with
-  a distinctive, specific embedding should not.
-""")
-
-# --- Part 2: likelihood-space hub check ------------------------------------
-N_TEXTS_LIK = 30        # random texts scored per idiom -- each is one real
-                         # forward pass (unlike Part 1), so kept modest
-
-print(f"--- likelihood-space hub check ({N_TEXTS_LIK} random texts) ---")
 df = pd.read_csv("data/raw/cip/train.csv")
-sample_rows = rng.sample(range(len(df)), N_TEXTS_LIK)
+sample_rows = rng.sample(range(len(df)), N_TEXTS)
 texts = [normalize(df["dst"].iloc[k]) for k in sample_rows]
-print("scoring each candidate against every sampled text "
-      f"({len(CANDIDATES + baseline)} idioms x {N_TEXTS_LIK} texts = "
-      f"{len(CANDIDATES + baseline) * N_TEXTS_LIK} forward passes)...")
 
-print(f"\n{'idiom':<10} {'mean loglik':>12} {'std':>8} {'min':>8} {'max':>8}")
-for idiom in CANDIDATES + baseline:
-    scores = np.array([score_summary(t, idiom) for t in texts])
-    tag = " <-- candidate" if idiom in CANDIDATES else ""
-    print(f"{idiom:<10} {scores.mean():>12.2f} {scores.std():>8.2f} "
-          f"{scores.min():>8.2f} {scores.max():>8.2f}{tag}")
+print(f"dictionary size: {len(idiom_list)}  |  layer: {LAYER}  |  "
+      f"texts: {N_TEXTS}  |  idioms checked: {idioms}")
+
+
+def cos(u, v):
+    return (u @ v) / (np.linalg.norm(u) * np.linalg.norm(v))
+
+
+def report(name, matrix):
+    """matrix[k, j] = idiom k's value against text j. Centering subtracts,
+    per text (column), the mean across all idioms tested for that text --
+    isolating the idiom-specific effect from text-to-text variance shared
+    by every idiom, which raw mean/std cannot distinguish from a real
+    hub effect."""
+    centered = matrix - matrix.mean(axis=0, keepdims=True)
+    print(f"\n{name}")
+    print(f"{'idiom':<10} {'raw mean':>10} {'raw std':>9} "
+          f"{'centered mean':>14} {'centered std':>13}")
+    for k, idiom in enumerate(idioms):
+        tag = " <-- candidate" if idiom in CANDIDATES else ""
+        print(f"{idiom:<10} {matrix[k].mean():>10.4f} {matrix[k].std():>9.4f} "
+              f"{centered[k].mean():>14.4f} {centered[k].std():>13.4f}{tag}")
+
+
+# --- Part 1: embedding space, against actual text states, not other idioms
+print(f"\ncomputing layer-{LAYER} text states for {N_TEXTS} texts "
+      f"({N_TEXTS} forward passes, one per text, reused for every idiom)...")
+text_states = [text_state_by_layer(t)[LAYER].cpu().numpy() for t in texts]
+
+static = {idiom: embeddings([idiom])[0] for idiom in idioms}
+cos_matrix = np.array([[cos(static[idiom], v) for v in text_states]
+                        for idiom in idioms])
+report(f"Part 1: cos(e_static(idiom), text state at layer {LAYER}) "
+       f"across {N_TEXTS} random texts", cos_matrix)
+
+# --- Part 2: likelihood space, does score_summary run generically high? ---
+print(f"\nscoring {len(idioms)} idioms x {N_TEXTS} texts = "
+      f"{len(idioms) * N_TEXTS} forward passes...")
+loglik_matrix = np.array([[score_summary(t, idiom) for t in texts]
+                           for idiom in idioms])
+report(f"Part 2: score_summary(text, idiom) across {N_TEXTS} random texts",
+       loglik_matrix)
 
 print(f"""
 Reading this:
-- These {N_TEXTS_LIK} texts are random, not chosen for fit with any
-  candidate -- this measures baseline likelihood, independent of whether an
-  idiom is ever actually correct for a given text.
-- A hub-like idiom should have a HIGHER mean loglik than the baseline
-  idioms, AND a SMALLER std -- consistently decent across unrelated content,
-  rather than being a strong match for some texts and a poor one for others.
-  If a candidate's mean is unremarkable next to the baseline, this
-  hypothesis is not what's driving script 10's results -- look elsewhere.
+- 'raw mean'/'raw std': mixes in text-to-text variance shared by every
+  idiom (a longer or harder text shifts everyone's score together), which
+  has nothing to do with any one idiom being a hub -- this is what the
+  first version of this script reported, and why Part 2's effect looked
+  too small to trust against its own noise.
+- 'centered mean'/'centered std': for each text, subtract that text's own
+  mean across all {len(idioms)} idioms tested, then average. This is the
+  quantity that actually matters -- both the informed proposer (a softmax
+  over candidates for ONE text) and the exact posterior only ever compare
+  idioms relative to each other within a fixed text, never in absolute
+  terms across texts. A real hub has a HIGH centered mean AND a LOW
+  centered std: consistently ranked above the pack, for reasons that don't
+  depend on what the text says.
 """)
