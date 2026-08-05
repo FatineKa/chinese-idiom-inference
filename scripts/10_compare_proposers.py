@@ -95,11 +95,23 @@ def compare(text, subset, n_steps=N_STEPS, verbose=VERBOSE):
                   f"{c_u[i] / len(trace_u_burned):>8.3f} "
                   f"{c_i[i] / len(trace_i_burned):>8.3f}")
 
+    # target = subset[0] by construction (see __main__). Compact, always-on
+    # summary of *why* the top candidate beat the target -- likelihood or
+    # prior -- without printing the full 20-row table for every text.
+    target = subset[0]
+    top = max(subset, key=lambda x: exact[x])
+    gap_loglik = likelihood[top] - likelihood[target]
+    gap_logprior = prior[top] - prior[target]
+
     return {
         "acc_uniform": acceptance_rate(trace_u),
         "acc_informed": acceptance_rate(trace_i),
         "tvd_uniform": total_variation(exact, c_u, len(trace_u_burned)),
         "tvd_informed": total_variation(exact, c_i, len(trace_i_burned)),
+        "top": top,
+        "target": target,
+        "gap_loglik": gap_loglik,
+        "gap_logprior": gap_logprior,
     }
 
 
@@ -130,10 +142,17 @@ if __name__ == "__main__":
               f"informed: {metrics['acc_informed']:.1%}  |  "
               f"TVD to exact -- uniform: {metrics['tvd_uniform']:.3f}  "
               f"informed: {metrics['tvd_informed']:.3f}")
+        won = "target won" if metrics["top"] == metrics["target"] else \
+              f"top={metrics['top']}"
+        print(f"  {won}  |  gap vs target -- loglik: {metrics['gap_loglik']:+.2f}  "
+              f"logprior: {metrics['gap_logprior']:+.2f}")
         results.append(metrics)
 
     print(f"\n=== aggregate over {len(results)} texts "
           f"(layer={LAYER}, T={TEMPERATURE}, n_steps={N_STEPS}) ===")
-    for key in ("acc_uniform", "acc_informed", "tvd_uniform", "tvd_informed"):
+    for key in ("acc_uniform", "acc_informed", "tvd_uniform", "tvd_informed",
+                "gap_loglik", "gap_logprior"):
         vals = [r[key] for r in results]
         print(f"{key:<14} mean = {sum(vals) / len(vals):.3f}")
+    n_target_won = sum(1 for r in results if r["top"] == r["target"])
+    print(f"target was top candidate in {n_target_won}/{len(results)} texts")
