@@ -94,7 +94,8 @@ if os.path.exists(DATA_OUT):
 
 rows = []
 n_layers = None
-text_state_stats = None   # [(mu, sigma)] per layer, loaded once
+LAYERS = None            # layers actually used for s_ell -- excludes 0
+text_state_stats = None  # {layer: (mu, sigma)}, loaded once
 header_written = False
 n_texts_done = 0
 
@@ -104,20 +105,29 @@ for text_id, group in groupby(to_evaluate, key=lambda row: row[0]):
     all_states = text_state_by_layer(text).cpu().numpy()   # (n_layers+1, dim)
     if n_layers is None:
         n_layers = all_states.shape[0]
-        text_state_stats = [load_text_state_stats(l) for l in range(n_layers)]
+        # Layer 0 is excluded: text_state_by_layer reads the state at the
+        # LAST token of the fixed prompt template ("...成语「"), and at
+        # layer 0 (raw embedding, no context mixing) that token's embedding
+        # is the same for every text regardless of content -- s_0(i,t)
+        # would be a constant per idiom, carrying zero information about
+        # the text, even unstandardized. Unlike Delta_0, whose baseline is
+        # the IDIOM's own state (varies by candidate), s_ell's layer-0 text
+        # state is structurally uninformative, not just weak.
+        LAYERS = list(range(1, n_layers))
+        text_state_stats = {l: load_text_state_stats(l) for l in LAYERS}
 
-    text_states_std = [(all_states[l] - text_state_stats[l][0]) / text_state_stats[l][1]
-                        for l in range(n_layers)]
+    text_states_std = {l: (all_states[l] - text_state_stats[l][0]) / text_state_stats[l][1]
+                        for l in LAYERS}
 
     batch_rows = []
     for _, idiom, _text, label in group:
         v = get_static_std(idiom)
-        s_by_layer = [
-            float(v @ w / (np.linalg.norm(v) * np.linalg.norm(w)))
-            for w in text_states_std
-        ]
+        s_by_layer = {
+            l: float(v @ w / (np.linalg.norm(v) * np.linalg.norm(w)))
+            for l, w in text_states_std.items()
+        }
         batch_rows.append({"text_id": text_id, "idiom": idiom, "y": label,
-                            **{f"s_{l}": s_by_layer[l] for l in range(n_layers)}})
+                            **{f"s_{l}": s_by_layer[l] for l in LAYERS}})
     rows.extend(batch_rows)
     pd.DataFrame(batch_rows).to_csv(DATA_OUT, mode="a", header=not header_written,
                                      index=False)
@@ -132,7 +142,7 @@ print(f"\nobservations: {len(rows)}\n")
 # --- Companion stat: win rate, the descriptive check AUC formalizes --------
 data = pd.DataFrame(rows)
 print(f"{'layer':>5} {'win rate':>10}")
-for l in range(n_layers):
+for l in LAYERS:
     col = f"s_{l}"
     wins = total = 0
     for _, g in data.groupby("text_id"):
@@ -145,10 +155,13 @@ for l in range(n_layers):
 print()
 
 # --- Step 3: shape the data -------------------------------------------------
-s_columns = [f"s_{l}" for l in range(n_layers)]
+s_columns = [f"s_{l}" for l in LAYERS]
 X = data[s_columns].to_numpy()
 y = data["y"].to_numpy()
 groups = data["text_id"].to_numpy()
+layer_pos = {l: i for i, l in enumerate(LAYERS)}   # layer number -> X column,
+                        # since LAYERS excludes 0 and X's columns follow LAYERS'
+                        # order, not raw layer numbers
 
 split = GroupShuffleSplit(n_splits=1, test_size=TEST_SIZE, random_state=SEED)
 i_train, i_test = next(split.split(X, y, groups))
@@ -161,12 +174,13 @@ print(f"baseline (always predict y=0, \"distractor\"): accuracy = {baseline_rate
 # --- Step 4: one classifier PER LAYER, univariate ---------------------------
 print(f"{'layer':>7} {'AUC':>6} {'accuracy':>11}")
 layer_results = []
-for l in range(n_layers):
+for l in LAYERS:
+    p = layer_pos[l]
     clf = LogisticRegression()
-    clf.fit(X[i_train, l:l + 1], y[i_train])
-    proba = clf.predict_proba(X[i_test, l:l + 1])[:, 1]
+    clf.fit(X[i_train, p:p + 1], y[i_train])
+    proba = clf.predict_proba(X[i_test, p:p + 1])[:, 1]
     auc = roc_auc_score(y[i_test], proba)
-    acc = accuracy_score(y[i_test], clf.predict(X[i_test, l:l + 1]))
+    acc = accuracy_score(y[i_test], clf.predict(X[i_test, p:p + 1]))
     layer_results.append((l, auc, acc))
     print(f"{l:>7} {auc:>6.3f} {acc:>10.1%}")
 
@@ -182,10 +196,11 @@ for _, g in data.groupby("text_id"):
 
 print(f"\n{'layer':>7} {'perm AUC':>9}")
 perm_aucs = []
-for l in range(n_layers):
+for l in LAYERS:
+    p = layer_pos[l]
     clf = LogisticRegression()
-    clf.fit(X[i_train, l:l + 1], y_perm[i_train])
-    proba = clf.predict_proba(X[i_test, l:l + 1])[:, 1]
+    clf.fit(X[i_train, p:p + 1], y_perm[i_train])
+    proba = clf.predict_proba(X[i_test, p:p + 1])[:, 1]
     auc = roc_auc_score(y_perm[i_test], proba)
     perm_aucs.append(auc)
     print(f"{l:>7} {auc:>9.3f}")
@@ -229,8 +244,8 @@ clf_multi.fit(X[i_train], y[i_train])
 proba_multi = clf_multi.predict_proba(X[i_test])[:, 1]
 auc_multi = roc_auc_score(y[i_test], proba_multi)
 acc_multi = accuracy_score(y[i_test], clf_multi.predict(X[i_test]))
-print(f"\nmultivariate model (all {n_layers} layers together): "
-      f"AUC = {auc_multi:.3f}  accuracy = {acc_multi:.1%}")
+print(f"\nmultivariate model (all {len(LAYERS)} layers together, layer 0 "
+      f"excluded): AUC = {auc_multi:.3f}  accuracy = {acc_multi:.1%}")
 
 # --- Step 6: permutation-label control task, multivariate model ----------
 clf_multi_perm = LogisticRegression(max_iter=1000)
