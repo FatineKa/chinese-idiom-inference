@@ -58,7 +58,7 @@ CANDIDATES = ["肆无忌惮", "无动于衷"]   # the two idioms that kept domin
 rng = random.Random(SEED)
 dictionary, _ = load_dictionary()
 idiom_list = sorted(dictionary)
-baseline = rng.sample(idiom_list, 5)
+baseline = rng.sample(idiom_list, 100)
 idioms = CANDIDATES + baseline
 
 df = pd.read_csv("data/raw/cip/train.csv")
