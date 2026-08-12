@@ -122,6 +122,11 @@ def compare(text, subset, n_steps=N_STEPS, verbose=VERBOSE):
 
 if __name__ == "__main__":
     df = pd.read_csv("data/raw/cip/train.csv")
+    # train.csv is not shuffled -- it contains long runs of consecutive
+    # examples sharing the same target idiom, so reading it in file order
+    # can make N_TEXTS mostly resample one idiom instead of drawing N_TEXTS
+    # distinct texts (seen directly: 18/30 texts sharing target 众所周知).
+    df = df.sample(frac=1, random_state=0).reset_index(drop=True)
     dictionary, lengths = load_dictionary()
 
     # 20 candidates per text: its target + 19 frequent idioms (same subset
