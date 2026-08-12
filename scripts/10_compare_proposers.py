@@ -162,3 +162,13 @@ if __name__ == "__main__":
         print(f"{key:<14} mean = {sum(vals) / len(vals):.3f}")
     n_target_won = sum(1 for r in results if r["top"] == r["target"])
     print(f"target was top candidate in {n_target_won}/{len(results)} texts")
+
+    # Distribution of the non-target winners -- a repeated hub idiom would
+    # show a few names dominating this count; a diffuse problem (many
+    # different idioms winning depending on the text) would show mostly
+    # distinct names with count 1.
+    non_target_winners = Counter(r["top"] for r in results if r["top"] != r["target"])
+    print(f"non-target winners: {len(non_target_winners)} distinct idiom(s) "
+          f"across {sum(non_target_winners.values())} losses")
+    for idiom, c in non_target_winners.most_common():
+        print(f"  {idiom}: {c}")
