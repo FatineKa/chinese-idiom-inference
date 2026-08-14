@@ -16,6 +16,11 @@ def load_dictionary(path="data/raw/cip/idioms.txt"):
     return dictionary, lengths
 
 
+def idioms_of_length(dictionary: set, n: int) -> list:
+    """Idioms with exactly n Chinese characters -- the candidate set I_n."""
+    return [i for i in dictionary if len(i) == n]
+
+
 def idioms_present(normalized_text: str, dictionary: set, lengths) -> set:
     """All dictionary idioms present in the (already normalized) text.
        Method: sliding window + O(1) set membership test.

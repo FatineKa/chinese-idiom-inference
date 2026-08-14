@@ -1,0 +1,171 @@
+CHINESE IDIOM INFERENCE PROJECT — OVERVIEW AND NEW PROPOSAL IDEA
+==================================================================
+
+PART 1 — WHAT THE PROJECT ALREADY DOES (existing thesis content)
+------------------------------------------------------------------
+
+Goal of the project:
+- Given a Chinese text t (a paraphrase that used to contain an idiom,
+  now rewritten without it) and a required idiom length n (4 or 8
+  Chinese characters), guess which idiom from a fixed dictionary was
+  originally used.
+- This is treated as a Bayesian inference problem: build a posterior
+  probability p(idiom | text) and either find its most likely idiom
+  (MAP = "maximum a posteriori" = the single best guess) or look at
+  the whole distribution.
+
+The Bayesian model (already written up):
+- Likelihood p(t | idiom): how well a language model (Qwen) predicts
+  the text t when told "the idiom X summarizes this text". Computed
+  by summing the log-probabilities of only the text's own tokens
+  (not the prompt), using the causal (next-word-prediction) structure
+  of the model.
+- Prior p(idiom): a Laplace-smoothed frequency prior, i.e. idioms
+  seen more often in the training corpus get slightly higher prior
+  probability, but every idiom (even unseen ones) keeps some
+  positive probability. Fixed once, over the whole ~31,114-idiom
+  dictionary (this was a bug we found and fixed: the code used to
+  normalize by the wrong count, 7,723 instead of 31,114 — now fixed
+  and verified to sum to 1).
+- Posterior p(idiom | t): likelihood times prior, normalized.
+
+Two ways to actually compute/use the posterior:
+- Argmax (exact, cheap for point estimates): since the normalizing
+  constant is the same for every idiom, finding the single best idiom
+  only requires scoring every candidate and taking the max. No need
+  to compute the full distribution.
+- Metropolis-Hastings (MCMC): a random-walk sampling method that lets
+  you approximate the WHOLE posterior distribution (not just the best
+  guess) without ever computing the normalizing constant directly.
+  Useful if scoring every candidate is too expensive.
+
+Representation-based work (trying to make MCMC's proposal step
+smarter, so the random walk finds good idioms faster):
+- Studied how a text's internal (contextualized) representation
+  differs from the idiom's plain (static) embedding, layer by layer
+  in the model — called the "modification signal" Delta_ell.
+- Built a classification study: does Delta_ell, at some layer, help
+  tell the real target idiom apart from decoy idioms? Best layer
+  found: layer 11, AUC = 0.648 (AUC = 0.5 means random guessing,
+  1.0 means perfect).
+- Tried to turn this into an actual "informed proposal" for MCMC: a
+  score s_ell (text-idiom alignment score) meant to bias the random
+  walk toward better candidates.
+- Tested s_ell directly with its own classification study: best
+  layer 23, AUC only 0.558 — barely better than random guessing. Also
+  the best layer for s_ell (23) is NOT the same as the best layer for
+  Delta_ell (11), meaning the layer that helps you diagnose the
+  problem is not the same layer that helps you propose a solution.
+- Conclusion: this embedding-informed proposal is not good enough to
+  justify using it. Simpler proposals (or no MCMC at all) are used
+  instead going forward.
+
+The final application (current version):
+- Since the informed proposal did not help enough, and the candidate
+  dictionary at a fixed length is small enough to score entirely
+  (29,683 idioms of length 4; only 30 of length 8), the final system
+  just scores every candidate directly ("brute-force enumeration")
+  instead of using MCMC at all.
+- For each text t and length n: compute a score for every candidate
+  idiom (log-likelihood + log-prior), turn these into a real
+  probability distribution using a numerically safe softmax
+  (log-sum-exp trick, avoids overflow/underflow), and return the
+  top-k most probable idioms with their probabilities.
+- This has been implemented in code (chengyu.argmax, chengyu.prior,
+  the FastAPI app in api/main.py) and covered by automated tests
+  checking: scores are finite, the prior sums to 1, the posterior
+  sums to 1 and is non-negative, the top idiom by raw score matches
+  the top idiom by probability, changing how many results you ask
+  for (k) doesn't change the underlying scores, and repeated
+  (text, idiom) pairs are cached instead of recomputed.
+- A small correctness check was also done earlier: comparing MCMC's
+  sampled visit frequencies against the exact posterior on a small
+  20-idiom test set, to confirm the MCMC implementation itself is
+  correct (separate from whether its proposal is "smart").
+
+
+PART 2 — THE NEW IDEA (advisor's suggestion, still being designed)
+------------------------------------------------------------------
+
+Motivation:
+- The earlier "informed proposal" idea (embedding similarity, s_ell)
+  did not work well enough. This is a DIFFERENT kind of informed
+  proposal, based on the idea of editing one character of the
+  current guess at a time, instead of jumping to a whole new idiom.
+- Important: this does NOT replace the brute-force final application
+  above (which is fine as-is, since the dictionary is small enough
+  to score directly). This is a separate experiment: does this new,
+  smarter MCMC proposal actually mix/converge faster than a plain
+  uniform proposal? Still to be tested empirically once implemented.
+
+The idea has two parts:
+
+1) Smarter character-position selection (instead of picking which
+   character to change uniformly at random):
+   - For the current candidate idiom i (n characters), and for each
+     position j in {1, ..., n}: remove character j, giving a shorter
+     string i^(-j), and score how well that shorter string still
+     explains the text using the same likelihood machinery already
+     built: p_j = log-likelihood of the text given i^(-j).
+   - Turn this into a probability distribution over positions using
+     a softmax with a temperature: weight_j is proportional to
+     exp(-p_j / T).
+   - Reasoning: if removing character j barely hurts the score
+     (p_j stays high), that character isn't carrying much
+     information about the text — editing it would mostly waste a
+     proposal step. If removing character j hurts a lot (p_j low),
+     that character matters a lot for the match — that's a useful,
+     informative place to focus the search. So low p_j -> high
+     weight -> proposed for editing more often.
+
+2) Generating the replacement character with Qwen (instead of
+   searching the fixed dictionary for a matching neighbor):
+   - Once a position j is chosen, mask it out and ask Qwen to predict
+     (sample from its probability distribution over) what character
+     should go there, given the text and the rest of the idiom.
+   - This can generate strings that are NOT real dictionary idioms.
+     To keep the underlying math from breaking (the whole framework
+     assumes a fixed, finite dictionary of real idioms), any
+     generated candidate that is not actually in the dictionary gets
+     automatically rejected — the chain just stays at its current
+     state that step. This is standard, valid MCMC behavior: it does
+     not change what the chain is ultimately sampling from (real
+     idioms only), it just occasionally "wastes" a step.
+
+Chain initialization (separate small idea, also from the advisor):
+- Instead of starting the random walk from a uniformly random or
+  arbitrary idiom, start it from whatever idiom Qwen suggests when
+  directly asked to summarize the text with one idiom (a generation
+  prompt, not just a scoring prompt).
+- Open question: what to do if Qwen's direct guess is not a real
+  dictionary idiom either — needs a fallback (e.g. fall back to a
+  random dictionary idiom, or to the brute-force argmax answer).
+
+Why this proposal needs the FULL (non-simplified) Metropolis-Hastings
+acceptance rule:
+- Because both parts of the proposal (which position to edit, what
+  character to put there) depend on the current state, the proposal
+  is not symmetric. The correction term requires recomputing the same
+  position-importance weights AND the same character-generation
+  probability, but evaluated at the proposed new state, to know how
+  likely the reverse move (going back) would have been.
+- This roughly doubles the cost per step: about 2n + 2 extra calls to
+  the language model per proposal, versus 1 call for a plain uniform
+  proposal. Worth remembering given the project's general goal of
+  keeping things simple — this is a deliberate added cost for a
+  (hopefully) smarter search, not an accident.
+
+Still open / not yet decided:
+- Where this material goes in the thesis: as a new section placed
+  AFTER the "Direct posterior application" section (framed as
+  "we also tried this, here's what happened"), or woven in BEFORE it
+  (as one more thing that was tried before settling on brute-force)?
+  This changes the narrative but not the math.
+- The fallback behavior if Qwen's initial guess (or a mid-chain
+  generated character) does not correspond to a real dictionary
+  idiom.
+- Whether to actually implement and run this, and if so, whether it
+  reuses the same comparison methodology already built (uniform vs.
+  informed proposer, measured by total variation distance and
+  MAP-hit rate against the exact posterior) from the earlier
+  embedding-proposal experiments.
