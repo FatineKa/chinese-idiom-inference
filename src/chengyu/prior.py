@@ -3,12 +3,17 @@
 import json
 import math
 
+from chengyu.evaluation import load_dictionary
+
 # File {idiom: occurrence count}. Built by scripts/00_build_freq.py
 with open("data/idiom_freq.json", encoding="utf-8") as f:
     _freq = json.load(f)
 
+_dictionary, _ = load_dictionary()
 _total = sum(_freq.values())
-_N     = len(_freq)
+_N     = len(_dictionary)  # size of the full candidate dictionary I, not just
+                            # the idioms observed in _freq -- so p sums to 1
+                            # over the whole candidate space
 
 
 def log_prior(idiom: str) -> float:
