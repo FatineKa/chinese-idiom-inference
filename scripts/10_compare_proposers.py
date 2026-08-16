@@ -10,12 +10,12 @@ Requires CHENGYU_LAYER: the layer validated by 09_classification_delta.py.
 There is no safe default here -- an unvalidated layer is not meaningfully
 different from a random guess, so the script refuses to run without one."""
 import json
-import math
 import os
 from collections import Counter
 
 import pandas as pd
 
+from chengyu.argmax import exact_posterior
 from chengyu.evaluation import find_idiom, load_dictionary, normalize
 from chengyu.geometry import embeddings
 from chengyu.mcmc import metropolis_hastings, text_proposer, uniform_proposer
@@ -44,13 +44,15 @@ VERBOSE = N_TEXTS == 1   # print the full per-idiom table only for a single text
                           # the point becomes the aggregate, not any one example.
 
 
-def acceptance_rate(trace):
-    """Fraction of steps where the state actually changed -- a proxy for
-    how often proposals were accepted (an accepted proposal that happens
-    to re-propose the same idiom would be missed, but that is negligible
-    on a 20-candidate subset)."""
-    moves = sum(trace[i] != trace[i - 1] for i in range(1, len(trace)))
-    return moves / (len(trace) - 1)
+def acceptance_rate(accepted):
+    """Fraction of steps where the proposal was actually accepted. Not the
+    same as the fraction of steps where the state changed: the informed
+    (independence-sampler) proposer can propose -- and trivially accept --
+    the current state again, which a state-change count would miss. The
+    uniform proposer never proposes the current state by construction, so
+    this only matters for the informed proposer, but both are reported
+    the same way for a fair comparison."""
+    return sum(accepted) / len(accepted)
 
 
 def total_variation(exact, counts, n):
@@ -71,22 +73,22 @@ def compare(text, subset, n_steps=N_STEPS, verbose=VERBOSE):
     # actually drives the exact posterior, rather than assuming.
     likelihood = {i: score_summary(text, i) for i in subset}
     prior = {i: log_prior(i) for i in subset}
-    w = {i: math.exp(likelihood[i] + prior[i]) for i in subset}
-    Z = sum(w.values())
-    exact = {i: w[i] / Z for i in subset}      # EXACT posterior
+    # EXACT posterior on `subset` (not the full dictionary), via log-sum-exp:
+    # direct exp() of the raw log-weights can underflow to 0 for long texts
+    exact = exact_posterior({i: likelihood[i] + prior[i] for i in subset})
 
     progress = max(1, n_steps // 10) if verbose else None
 
     uniform = uniform_proposer(subset)
-    trace_u = metropolis_hastings(text, subset[0], uniform, n_steps,
-                                   progress_every=progress)
+    trace_u, accepted_u = metropolis_hastings(text, subset[0], uniform, n_steps,
+                                               progress_every=progress)
     trace_u_burned = trace_u[n_steps // 10:]
 
     subset_embeddings = embeddings(subset)
     informed = text_proposer(subset, text, subset_embeddings, LAYER,
                               temperature=TEMPERATURE, standardize=STANDARDIZE)
-    trace_i = metropolis_hastings(text, subset[0], informed, n_steps,
-                                   progress_every=progress)
+    trace_i, accepted_i = metropolis_hastings(text, subset[0], informed, n_steps,
+                                               progress_every=progress)
     trace_i_burned = trace_i[n_steps // 10:]
 
     c_u = Counter(trace_u_burned)
@@ -109,8 +111,8 @@ def compare(text, subset, n_steps=N_STEPS, verbose=VERBOSE):
     gap_logprior = prior[top] - prior[target]
 
     return {
-        "acc_uniform": acceptance_rate(trace_u),
-        "acc_informed": acceptance_rate(trace_i),
+        "acc_uniform": acceptance_rate(accepted_u),
+        "acc_informed": acceptance_rate(accepted_i),
         "tvd_uniform": total_variation(exact, c_u, len(trace_u_burned)),
         "tvd_informed": total_variation(exact, c_i, len(trace_i_burned)),
         "top": top,

@@ -63,13 +63,22 @@ SEED = 0
 rng = random.Random(SEED)
 dictionary, lengths = load_dictionary()
 idiom_list = sorted(dictionary)
-df = pd.read_csv("data/raw/cip/train.csv")
+# train.csv is not randomly ordered (long runs sharing the same target),
+# so shuffle before taking the first N_TEXTS -- same fix as scripts 04/10.
+df = (
+    pd.read_csv("data/raw/cip/train.csv")
+    .sample(frac=1, random_state=SEED)
+    .reset_index(drop=True)
+)
 
 # --- Step 1: list the candidates to evaluate (no model call here) ---------
 to_evaluate = []        # (text_id, idiom, text, y)
 skipped = 0
 for text_id, (src, dst) in enumerate(zip(df["src"], df["dst"])):
-    if N_TEXTS is not None and text_id >= N_TEXTS:
+    # N_TEXTS counts VALID texts found so far, not raw rows scanned --
+    # otherwise a run of many skipped (ambiguous-target) rows near the
+    # start silently returns fewer evaluated texts than requested.
+    if N_TEXTS is not None and (text_id - skipped) >= N_TEXTS:
         break
     target = find_idiom(src, dst, dictionary, lengths)
     if target is None:
@@ -152,7 +161,7 @@ for text_id, group in groupby(to_evaluate, key=lambda row: row[0]):
     for _, idiom, _text, label in group:
         v = get_static_std(idiom)
         s_by_layer = {
-            l: float(v @ w / (np.linalg.norm(v) * np.linalg.norm(w)))
+            l: float(v @ w / max(np.linalg.norm(v) * np.linalg.norm(w), 1e-12))
             for l, w in text_states_std.items()
         }
         batch_rows.append({"text_id": text_id, "idiom": idiom, "y": label,
@@ -175,7 +184,12 @@ data = pd.read_csv(DATA_OUT)
 # reprocessed and appended again -- keep only the latest write per
 # (text_id, idiom) so a stale partial write never silently duplicates rows.
 n_before = len(data)
-data = data.drop_duplicates(subset=["text_id", "idiom"], keep="last")
+# reset_index is required, not cosmetic: dropping rows leaves gaps in the
+# original row labels, and code below (the permutation control) uses
+# .index.to_numpy() to index directly into position-based numpy arrays
+# (X, y, y_perm) built from this same DataFrame -- without resetting,
+# those labels no longer match array positions once any row is dropped.
+data = data.drop_duplicates(subset=["text_id", "idiom"], keep="last").reset_index(drop=True)
 if len(data) != n_before:
     print(f"dropped {n_before - len(data)} duplicate rows from a partial "
           f"write before an interruption")
@@ -186,21 +200,13 @@ if LAYERS is None:
     n_layers = max(LAYERS) + 1
 print(f"\nobservations: {len(data)}\n")
 
-# --- Companion stat: win rate, the descriptive check AUC formalizes --------
-print(f"{'layer':>5} {'win rate':>10}")
-for l in LAYERS:
-    col = f"s_{l}"
-    wins = total = 0
-    for _, g in data.groupby("text_id"):
-        target_s = g.loc[g["y"] == 1, col].iloc[0]
-        distractor_s = g.loc[g["y"] == 0, col]
-        wins += int((target_s > distractor_s).sum())   # higher s = favored,
-                        # unlike Delta_l where smaller was the win condition
-        total += len(distractor_s)
-    print(f"{l:>5} {wins / total:>10.3f}")
-print()
-
-# --- Step 3: shape the data -------------------------------------------------
+# --- Step 3: shape the data, then split into train / validation / test ----
+# Three-way split, not two: picking the best-scoring layer out of ~30 is
+# itself a form of model selection. Selecting AND reporting the "best" AUC
+# on the same held-out set optimistically biases it (the max over many
+# noisy layer estimates tends to beat any single layer's true AUC).
+# Validation set: layer selection. Test set: one final, honestly-reported
+# AUC for the selected layer, touched only once.
 s_columns = [f"s_{l}" for l in LAYERS]
 X = data[s_columns].to_numpy()
 y = data["y"].to_numpy()
@@ -209,69 +215,139 @@ layer_pos = {l: i for i, l in enumerate(LAYERS)}   # layer number -> X column,
                         # since LAYERS excludes 0 and X's columns follow LAYERS'
                         # order, not raw layer numbers
 
-split = GroupShuffleSplit(n_splits=1, test_size=TEST_SIZE, random_state=SEED)
-i_train, i_test = next(split.split(X, y, groups))
+split_test = GroupShuffleSplit(n_splits=1, test_size=TEST_SIZE, random_state=SEED)
+i_trainval, i_test = next(split_test.split(X, y, groups))
+split_val = GroupShuffleSplit(n_splits=1, test_size=TEST_SIZE, random_state=SEED)
+i_train_rel, i_val_rel = next(split_val.split(X[i_trainval], y[i_trainval], groups[i_trainval]))
+i_train, i_val = i_trainval[i_train_rel], i_trainval[i_val_rel]
+
 print(f"train: {len(i_train)} observations ({len(set(groups[i_train]))} texts)  "
+      f"val: {len(i_val)} observations ({len(set(groups[i_val]))} texts)  "
       f"test: {len(i_test)} observations ({len(set(groups[i_test]))} texts)\n")
+
+# --- Companion stat: win rate, on the test set only (so it's measured on
+# the same held-out rows as the final reported AUC, not mixed with rows
+# used for training or layer selection) -------------------------------
+test_text_ids = set(groups[i_test])
+data_test = data[data["text_id"].isin(test_text_ids)]
+print(f"{'layer':>5} {'win rate (test)':>16}")
+for l in LAYERS:
+    col = f"s_{l}"
+    wins = total = 0
+    for _, g in data_test.groupby("text_id"):
+        target_s = g.loc[g["y"] == 1, col].iloc[0]
+        distractor_s = g.loc[g["y"] == 0, col]
+        wins += int((target_s > distractor_s).sum())   # higher s = favored,
+                        # unlike Delta_l where smaller was the win condition
+        total += len(distractor_s)
+    print(f"{l:>5} {wins / total:>16.3f}")
+print()
 
 baseline_rate = 1 - y[i_test].mean()
 print(f"baseline (always predict y=0, \"distractor\"): accuracy = {baseline_rate:.1%}\n")
 
-# --- Step 4: one classifier PER LAYER, univariate ---------------------------
-print(f"{'layer':>7} {'AUC':>6} {'accuracy':>11}")
+# --- Step 4: one classifier PER LAYER, univariate, selected on VALIDATION --
+print(f"{'layer':>7} {'val AUC':>7} {'val acc':>11}")
 layer_results = []
 for l in LAYERS:
     p = layer_pos[l]
     clf = LogisticRegression()
     clf.fit(X[i_train, p:p + 1], y[i_train])
-    proba = clf.predict_proba(X[i_test, p:p + 1])[:, 1]
-    auc = roc_auc_score(y[i_test], proba)
-    acc = accuracy_score(y[i_test], clf.predict(X[i_test, p:p + 1]))
+    proba = clf.predict_proba(X[i_val, p:p + 1])[:, 1]
+    auc = roc_auc_score(y[i_val], proba)
+    acc = accuracy_score(y[i_val], clf.predict(X[i_val, p:p + 1]))
     layer_results.append((l, auc, acc))
-    print(f"{l:>7} {auc:>6.3f} {acc:>10.1%}")
+    print(f"{l:>7} {auc:>7.3f} {acc:>10.1%}")
 
-best_layer, best_auc, _ = max(layer_results, key=lambda r: r[1])
+best_layer, best_val_auc, _ = max(layer_results, key=lambda r: r[1])
 
-# --- Step 4bis: permutation-label control, per layer (Hewitt & Liang, 2019) -
+# --- Step 4bis: ONE final, honestly-reported test AUC for the selected
+# layer -- and the same for layer 11 (pre-specified, not chosen by search,
+# so its test AUC needs no correction) for a fair comparison ------------
+p_best = layer_pos[best_layer]
+clf_best = LogisticRegression()
+clf_best.fit(X[i_train, p_best:p_best + 1], y[i_train])
+final_test_auc = roc_auc_score(
+    y[i_test], clf_best.predict_proba(X[i_test, p_best:p_best + 1])[:, 1])
+print(f"\nselected layer {best_layer} (by validation AUC = {best_val_auc:.3f}): "
+      f"test AUC = {final_test_auc:.3f}")
+
+if 11 in LAYERS:
+    p11 = layer_pos[11]
+    clf_11 = LogisticRegression()
+    clf_11.fit(X[i_train, p11:p11 + 1], y[i_train])
+    layer_11_test_auc = roc_auc_score(
+        y[i_test], clf_11.predict_proba(X[i_test, p11:p11 + 1])[:, 1])
+else:
+    layer_11_test_auc = None
+
+# --- Step 4ter: permutation-label control (Hewitt & Liang, 2019) ----------
+# Layer selection tried len(LAYERS) candidates and kept the max: a single
+# permutation cannot control for that. Run many permutations and compare
+# the OBSERVED max validation AUC against the null DISTRIBUTION of the max
+# (not many separate per-layer checks).
+N_PERMUTATIONS = int(os.environ.get("CHENGYU_N_PERM", "20"))
 perm_rng = random.Random(SEED + 1)
-y_perm = y.copy()
-for _, g in data.groupby("text_id"):
-    idx = g.index.to_numpy()
-    y_perm[idx] = 0
-    y_perm[perm_rng.choice(idx.tolist())] = 1
 
-print(f"\n{'layer':>7} {'perm AUC':>9}")
-perm_aucs = []
-for l in LAYERS:
-    p = layer_pos[l]
-    clf = LogisticRegression()
-    clf.fit(X[i_train, p:p + 1], y_perm[i_train])
-    proba = clf.predict_proba(X[i_test, p:p + 1])[:, 1]
-    auc = roc_auc_score(y_perm[i_test], proba)
-    perm_aucs.append(auc)
-    print(f"{l:>7} {auc:>9.3f}")
 
-# --- Step 4ter: plot AUC(layer), real vs. permuted-label control ----------
+def permuted_labels(rng):
+    y_perm = y.copy()
+    for _, g in data.groupby("text_id"):
+        idx = g.index.to_numpy()
+        y_perm[idx] = 0
+        y_perm[rng.choice(idx.tolist())] = 1
+    return y_perm
+
+
+max_perm_val_aucs = []
+perm_aucs_for_plot = None   # one representative permutation, for the figure
+for b in range(N_PERMUTATIONS):
+    y_perm = permuted_labels(perm_rng)
+    perm_aucs_b = []
+    for l in LAYERS:
+        p = layer_pos[l]
+        clf = LogisticRegression()
+        clf.fit(X[i_train, p:p + 1], y_perm[i_train])
+        proba = clf.predict_proba(X[i_val, p:p + 1])[:, 1]
+        perm_aucs_b.append(roc_auc_score(y_perm[i_val], proba))
+    max_perm_val_aucs.append(max(perm_aucs_b))
+    if b == 0:
+        perm_aucs_for_plot = perm_aucs_b
+
+p_value = (1 + sum(t >= best_val_auc for t in max_perm_val_aucs)) / (N_PERMUTATIONS + 1)
+print(f"\nmax-statistic permutation test ({N_PERMUTATIONS} permutations): "
+      f"observed max val AUC = {best_val_auc:.3f}, "
+      f"p = {p_value:.3f} (fraction of permuted max-AUCs >= observed)")
+
+# single permutation check on the FINAL test AUC -- no multiple-comparison
+# issue here, since only one (already-selected) layer is being evaluated
+y_perm_test = permuted_labels(random.Random(SEED + 2))
+clf_best_perm = LogisticRegression()
+clf_best_perm.fit(X[i_train, p_best:p_best + 1], y_perm_test[i_train])
+final_test_perm_auc = roc_auc_score(
+    y_perm_test[i_test], clf_best_perm.predict_proba(X[i_test, p_best:p_best + 1])[:, 1])
+
+# --- Step 4quat: plot validation-AUC(layer), real vs. permuted-label control
 layers = [l for l, _, _ in layer_results]
-aucs = [a for _, a, _ in layer_results]
+val_aucs = [a for _, a, _ in layer_results]
 
 fig, ax = plt.subplots(figsize=(7, 4))
 ax.axhline(0.5, color="#93a4b8", linestyle="--", linewidth=1,
            label="chance (AUC = 0.5)")
-ax.plot(layers, aucs, color="#1f5c8a", linewidth=2, marker="o",
-        markersize=4, label="AUC by layer (s_ell)")
-ax.plot(layers, perm_aucs, color="#c0783c", linewidth=1.5, marker="o",
+ax.plot(layers, val_aucs, color="#1f5c8a", linewidth=2, marker="o",
+        markersize=4, label="validation AUC by layer (s_ell)")
+ax.plot(layers, perm_aucs_for_plot, color="#c0783c", linewidth=1.5, marker="o",
         markersize=3, linestyle="--", alpha=0.85,
-        label="permuted-label control")
-ax.scatter([best_layer], [best_auc], color="#1f5c8a", s=70,
+        label="permuted-label control (1 of B permutations)")
+ax.scatter([best_layer], [best_val_auc], color="#1f5c8a", s=70,
            zorder=5, edgecolor="white", linewidth=1)
-ax.annotate(f"layer {best_layer}\nAUC={best_auc:.3f}",
-            (best_layer, best_auc), textcoords="offset points",
+ax.annotate(f"layer {best_layer}\nval AUC={best_val_auc:.3f}\ntest AUC={final_test_auc:.3f}",
+            (best_layer, best_val_auc), textcoords="offset points",
             xytext=(8, 10), fontsize=9, color="#1f5c8a")
 ax.axvline(11, color="#9a9a9a", linestyle=":", linewidth=1,
            label="layer 11 (chosen for Delta_l)")
 ax.set_xlabel("layer l (0 = embeddings)")
-ax.set_ylabel("AUC (test, grouped by text)")
+ax.set_ylabel("AUC (validation, grouped by text)")
 ax.set_title(f"Separability of s_ell(i,t) by layer -- n={evaluated} texts, "
              f"{N_DISTRACTORS} distractors/text "
              f"({'standardized' if STANDARDIZE else 'not standardized'})")
@@ -286,6 +362,8 @@ fig.savefig(FIGURE, dpi=150)
 print(f"\nAUC(layer) curve saved: {FIGURE}")
 
 # --- Step 5: one MULTIVARIATE classifier, all layers at once --------------
+# No layer selection here (a single model, not compared against
+# alternatives to pick a "best" one), so train/test needs no validation set.
 clf_multi = LogisticRegression(max_iter=1000)
 clf_multi.fit(X[i_train], y[i_train])
 proba_multi = clf_multi.predict_proba(X[i_test])[:, 1]
@@ -295,20 +373,19 @@ print(f"\nmultivariate model (all {len(LAYERS)} layers together, layer 0 "
       f"excluded): AUC = {auc_multi:.3f}  accuracy = {acc_multi:.1%}")
 
 # --- Step 6: permutation-label control task, multivariate model ----------
+y_perm_multi = permuted_labels(random.Random(SEED + 3))
 clf_multi_perm = LogisticRegression(max_iter=1000)
-clf_multi_perm.fit(X[i_train], y_perm[i_train])
+clf_multi_perm.fit(X[i_train], y_perm_multi[i_train])
 proba_multi_perm = clf_multi_perm.predict_proba(X[i_test])[:, 1]
-auc_multi_perm = roc_auc_score(y_perm[i_test], proba_multi_perm)
-best_perm_auc = max(perm_aucs)
+auc_multi_perm = roc_auc_score(y_perm_multi[i_test], proba_multi_perm)
 print(f"\nmultivariate model on permuted labels: AUC = {auc_multi_perm:.3f}")
 
-if n_layers > 11:
-    layer_11_auc = next(a for l, a, _ in layer_results if l == 11)
-    layer_11_line = f"AUC = {layer_11_auc:.3f}."
-    if best_auc - layer_11_auc < 0.02:
-        layer_11_line += " Close to best -> the layer transfer assumption holds."
+if layer_11_test_auc is not None:
+    layer_11_line = f"test AUC = {layer_11_test_auc:.3f}."
+    if final_test_auc - layer_11_test_auc < 0.02:
+        layer_11_line += " Close to selected layer -> the layer transfer assumption holds."
     else:
-        layer_11_line += (" Meaningfully below best -> the layer transfer "
+        layer_11_line += (" Meaningfully below the selected layer -> the layer transfer "
                            "assumption does NOT hold, a different layer "
                            "should be used for s_ell.")
 else:
@@ -318,15 +395,19 @@ print(f"""
 Summary:
 - baseline {baseline_rate:.1%} (always "distractor"): any AUC close to
   0.5 means s_ell carries no usable signal at that layer.
-- best single layer: {best_layer} (AUC = {best_auc:.3f}).
+- best single layer: {best_layer} (selected by validation AUC = {best_val_auc:.3f},
+  honest held-out test AUC = {final_test_auc:.3f}).
 - layer 11 (reused from Delta_l's study without its own check, per the
   bridge paragraph's second open assumption): {layer_11_line}
-- multivariate AUC ({auc_multi:.3f}) vs. best single layer ({best_auc:.3f}):
+- multivariate AUC ({auc_multi:.3f}) vs. selected single layer ({final_test_auc:.3f}):
   close -> layer {best_layer} carries essentially all the signal;
   clearly higher -> several layers complement each other.
-- control task: best permuted-label AUC = {best_perm_auc:.3f}, multivariate
-  permuted-label AUC = {auc_multi_perm:.3f} (both should be close to 0.5).
-  If either is as high as the corresponding real-label AUC, that is
-  evidence of a leak in the pipeline, not of s_ell carrying information --
-  investigate before trusting the real AUC values.
+- layer-selection significance: p = {p_value:.3f} ({N_PERMUTATIONS} permutations,
+  max-statistic test) -- probability that random noise alone would produce
+  a best-of-{len(LAYERS)}-layers validation AUC at least this high.
+- control task: final-layer test permuted-label AUC = {final_test_perm_auc:.3f},
+  multivariate permuted-label AUC = {auc_multi_perm:.3f} (both should be
+  close to 0.5). If either is as high as the corresponding real-label AUC,
+  that is evidence of a leak in the pipeline, not of s_ell carrying
+  information -- investigate before trusting the real AUC values.
 """)

@@ -19,7 +19,17 @@ idiom_list = sorted(dictionary)   # sorted, not list(): set order depends on
                         # per-process hash randomization (PYTHONHASHSEED),
                         # which would silently break SEED-based reproducibility
                         # of the random.sample() distractor draw below
-df = pd.read_csv("data/raw/cip/train.csv")
+# Held-out split, not train.csv: the prior (data/idiom_freq.json) is built
+# entirely from train.csv (00_build_freq.py), so "with prior" accuracy
+# measured on train.csv rows would be in-sample for the prior. Also
+# shuffled: file order is not random (long runs share the same target,
+# same issue already fixed in scripts 04/09/10/13).
+df = (
+    pd.read_csv("data/raw/cip/in_domain/test.in.csv")
+    .drop_duplicates(subset=["src", "dst"])
+    .sample(frac=1, random_state=0)
+    .reset_index(drop=True)
+)
 
 correct_without, correct_with, evaluated, skipped = 0, 0, 0, 0
 
