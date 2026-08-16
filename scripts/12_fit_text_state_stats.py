@@ -41,7 +41,11 @@ n_layers = all_states.shape[1]
 os.makedirs("data", exist_ok=True)
 for layer in range(n_layers):
     states = all_states[:, layer, :]
-    mu, sigma = states.mean(axis=0), states.std(axis=0)
+    mu = states.mean(axis=0)
+    sigma = np.maximum(states.std(axis=0), 1e-8)   # floor: a coordinate with
+                        # ~zero variance would otherwise blow up to inf/nan
+                        # when used to standardize (mcmc.text_proposer,
+                        # scripts/13_classification_s.py)
     out = f"data/text_state_stats_layer{layer}.npz"
     np.savez(out, mu=mu, sigma=sigma, n_texts=len(texts), layer=layer)
 

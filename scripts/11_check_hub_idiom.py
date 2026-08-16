@@ -58,7 +58,10 @@ CANDIDATES = ["肆无忌惮", "无动于衷"]   # the two idioms that kept domin
 rng = random.Random(SEED)
 dictionary, _ = load_dictionary()
 idiom_list = sorted(dictionary)
-baseline = rng.sample(idiom_list, 100)
+baseline_pool = [i for i in idiom_list if i not in CANDIDATES]   # exclude:
+                        # sampling a CANDIDATES idiom into baseline too would
+                        # duplicate a row and give it extra weight below
+baseline = rng.sample(baseline_pool, 100)
 idioms = CANDIDATES + baseline
 
 df = pd.read_csv("data/raw/cip/train.csv")

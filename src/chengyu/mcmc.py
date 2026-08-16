@@ -22,21 +22,29 @@ def log_weight(text, idiom):
 def metropolis_hastings(text, initial_state, proposer, n_steps, seed=0, progress_every=None):
     """progress_every: if set, prints a status line every that many steps.
     Off by default, since this function is also called from contexts
-    (e.g. a future API endpoint) where console output isn't wanted."""
-    rng     = random.Random(seed)
-    current = initial_state
-    lw      = log_weight(text, current)
-    trace   = []
-    start   = time.time()
+    (e.g. a future API endpoint) where console output isn't wanted.
+    Returns (trace, accepted): accepted[m] is True iff the proposal at
+    step m+1 was accepted -- distinct from trace[m] != trace[m-1], since
+    an accepted proposal can re-propose the current state (e.g. an
+    independence sampler that isn't restricted to propose a different
+    state)."""
+    rng      = random.Random(seed)
+    current  = initial_state
+    lw       = log_weight(text, current)
+    trace    = []
+    accepted = []
+    start    = time.time()
     for step in range(n_steps):
         candidate, log_hastings = proposer(current, rng)
         lw2 = log_weight(text, candidate)                    # 1 Qwen call (PyTorch inside)
-        if math.log(rng.random()) < (lw2 - lw) + log_hastings:
+        accept = math.log(rng.random()) < (lw2 - lw) + log_hastings
+        if accept:
             current, lw = candidate, lw2
         trace.append(current)
+        accepted.append(accept)
         if progress_every and (step + 1) % progress_every == 0:
             print(f"  step {step + 1}/{n_steps}  ({time.time() - start:.0f}s elapsed)")
-    return trace
+    return trace, accepted
 
 
 def uniform_proposer(idioms):
@@ -70,7 +78,7 @@ def text_proposer(idioms: list, text: str, static_embeddings: np.ndarray,
         mu_t, sigma_t = load_text_state_stats(layer)
         static_embeddings = (static_embeddings - mu_s) / sigma_s
         v = (v - mu_t) / sigma_t
-    norms = np.linalg.norm(static_embeddings, axis=1) * np.linalg.norm(v)
+    norms = np.maximum(np.linalg.norm(static_embeddings, axis=1) * np.linalg.norm(v), 1e-12)
     weights = np.exp((static_embeddings @ v / norms) / temperature)
     weights /= weights.sum()
     index = {idiom: k for k, idiom in enumerate(idioms)}

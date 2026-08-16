@@ -16,10 +16,10 @@ Formalized here as supervised binary classification:
     drawn at random among the 31,113 idioms.
   - FEATURE per layer: Delta_l(i, t), l = 0 (raw embedding) to L (last
     layer, read from the model, never assumed in advance).
-  - MODEL: logistic regression on Delta_l alone. Minimal by design: if
-    this doesn't separate the classes, a more complex model won't save it
-    either — at the exploratory stage, model complexity shouldn't mask an
-    absent signal.
+  - MODEL: logistic regression on Delta_l alone. Minimal by design: this
+    tests for a simple, monotone separating signal in Delta_l. Failure of
+    this univariate model does not rule out a more complex (e.g. nonlinear)
+    relationship -- it only shows the absence of the simple kind.
 
 Split BY TEXT, not by row (GroupShuffleSplit, group = text id): if the
 1+N_DISTRACTORS rows of one text could land on both sides of the split,
@@ -38,6 +38,7 @@ import os
 import random
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, roc_auc_score
@@ -77,14 +78,23 @@ idiom_list = sorted(dictionary)   # sorted, not list(): set iteration order
                         # depends on Python's per-process hash randomization
                         # (PYTHONHASHSEED), so a bare list() would make
                         # SEED-based reproducibility an illusion
-df = pd.read_csv("data/raw/cip/train.csv")
+# train.csv is not randomly ordered (long runs sharing the same target),
+# so shuffle before taking the first N_TEXTS -- same fix as scripts 04/10/13.
+df = (
+    pd.read_csv("data/raw/cip/train.csv")
+    .sample(frac=1, random_state=SEED)
+    .reset_index(drop=True)
+)
 
 # --- Step 1: list the candidates to evaluate (no model call here) ---------
 to_evaluate = []        # (text_id, idiom, text, y)
 skipped = 0
 
 for text_id, (src, dst) in enumerate(zip(df["src"], df["dst"])):
-    if N_TEXTS is not None and text_id >= N_TEXTS:
+    # N_TEXTS counts VALID texts found so far, not raw rows scanned --
+    # otherwise a run of many skipped (ambiguous-target) rows near the
+    # start silently returns fewer evaluated texts than requested.
+    if N_TEXTS is not None and (text_id - skipped) >= N_TEXTS:
         break
     target = find_idiom(src, dst, dictionary, lengths)
     if target is None:
@@ -132,103 +142,147 @@ for start in range(0, len(to_evaluate), BATCH_SIZE):
 
 print(f"\nobservations: {len(rows)}\n")
 
-# --- Companion stat: win rate, the descriptive check AUC formalizes --------
-# Per text/distractor: does the correct idiom have a smaller Delta_l than
-# the distractor? No train/test split, no fitted model — purely descriptive.
 data = pd.DataFrame(rows)
 
-print(f"{'layer':>5} {'win rate':>10}")
+# --- Step 3: shape the data, then split into train / validation / test ----
+# Three-way split, not two: picking the best-scoring layer out of many is
+# itself a form of model selection. Selecting AND reporting the "best" AUC
+# on the same held-out set optimistically biases it (the max over many
+# noisy layer estimates tends to beat any single layer's true AUC).
+# Validation set: layer selection. Test set: one final, honestly-reported
+# AUC for the selected layer, touched only once.
+delta_columns = [f"delta_{l}" for l in range(n_layers)]
+X = data[delta_columns].to_numpy()    # (n_observations, n_layers)
+y = data["y"].to_numpy()
+groups = data["text_id"].to_numpy()   # for the train/val/test split BY TEXT
+
+split_test = GroupShuffleSplit(n_splits=1, test_size=TEST_SIZE, random_state=SEED)
+i_trainval, i_test = next(split_test.split(X, y, groups))
+split_val = GroupShuffleSplit(n_splits=1, test_size=TEST_SIZE, random_state=SEED)
+i_train_rel, i_val_rel = next(split_val.split(X[i_trainval], y[i_trainval], groups[i_trainval]))
+i_train, i_val = i_trainval[i_train_rel], i_trainval[i_val_rel]
+
+print(f"train: {len(i_train)} observations ({len(set(groups[i_train]))} texts)  "
+      f"val: {len(i_val)} observations ({len(set(groups[i_val]))} texts)  "
+      f"test: {len(i_test)} observations ({len(set(groups[i_test]))} texts)\n")
+
+# --- Companion stat: win rate, on the test set only (so it's measured on
+# the same held-out rows as the final reported AUC) -- does the correct
+# idiom have a smaller Delta_l than the distractor? No fitted model,
+# purely descriptive. ------------------------------------------------
+test_text_ids = set(groups[i_test])
+data_test = data[data["text_id"].isin(test_text_ids)]
+print(f"{'layer':>5} {'win rate (test)':>16}")
 for l in range(n_layers):
     col = f"delta_{l}"
     wins = total = 0
-    for _, group in data.groupby("text_id"):
+    for _, group in data_test.groupby("text_id"):
         target_delta = group.loc[group["y"] == 1, col].iloc[0]
         distractor_deltas = group.loc[group["y"] == 0, col]
         wins += int((target_delta < distractor_deltas).sum())
         total += len(distractor_deltas)
-    print(f"{l:>5} {wins / total:>10.3f}")
+    print(f"{l:>5} {wins / total:>16.3f}")
 print()
-
-# --- Step 3: shape the data -------------------------------------------------
-delta_columns = [f"delta_{l}" for l in range(n_layers)]
-X = data[delta_columns].to_numpy()    # (n_observations, n_layers)
-y = data["y"].to_numpy()
-groups = data["text_id"].to_numpy()   # for the train/test split BY TEXT
-
-split = GroupShuffleSplit(n_splits=1, test_size=TEST_SIZE, random_state=SEED)
-i_train, i_test = next(split.split(X, y, groups))
-print(f"train: {len(i_train)} observations ({len(set(groups[i_train]))} texts)  "
-      f"test: {len(i_test)} observations ({len(set(groups[i_test]))} texts)\n")
 
 baseline_rate = 1 - y[i_test].mean()   # always predict y=0 ("distractor")
 print(f"baseline (always predict y=0, \"distractor\"): accuracy = {baseline_rate:.1%}\n")
 
-# --- Step 4: one classifier PER LAYER, univariate ---------------------------
-# p(y=1 | Delta_l) = sigmoid(a*Delta_l + b), fit separately for each layer:
-# the properly evaluated (train/test) equivalent of script 07's win rate.
-print(f"{'layer':>7} {'AUC':>6} {'accuracy':>11}")
+# --- Step 4: one classifier PER LAYER, univariate, selected on VALIDATION --
+# p(y=1 | Delta_l) = sigmoid(a*Delta_l + b), fit separately for each layer.
+print(f"{'layer':>7} {'val AUC':>7} {'val acc':>11}")
 layer_results = []
 for l in range(n_layers):
     clf = LogisticRegression()
     clf.fit(X[i_train, l:l+1], y[i_train])
-    proba = clf.predict_proba(X[i_test, l:l+1])[:, 1]
-    auc = roc_auc_score(y[i_test], proba)
-    acc = accuracy_score(y[i_test], clf.predict(X[i_test, l:l+1]))
+    proba = clf.predict_proba(X[i_val, l:l+1])[:, 1]
+    auc = roc_auc_score(y[i_val], proba)
+    acc = accuracy_score(y[i_val], clf.predict(X[i_val, l:l+1]))
     layer_results.append((l, auc, acc))
-    print(f"{l:>7} {auc:>6.3f} {acc:>10.1%}")
+    print(f"{l:>7} {auc:>7.3f} {acc:>10.1%}")
 
-best_layer, best_auc, _ = max(layer_results, key=lambda r: r[1])
+best_layer, best_val_auc, _ = max(layer_results, key=lambda r: r[1])
 
-# --- Step 4bis: permutation-label control, per layer (Hewitt & Liang, 2019) -
-# Same Delta_l values (X unchanged, no new forward passes) -- only the
-# labels change: within each text's group of 1+N_DISTRACTORS candidates,
-# the "correct" one is reassigned uniformly at random, independent of
-# which candidate actually is correct. Delta_l can then carry no real
-# information about y_perm by construction, so AUC here should collapse
-# to ~0.5. If it doesn't, the pipeline (not Delta_l) is producing the
-# apparent signal -- e.g. a leak in the grouped split -- and the AUC
-# values measured above on the real labels cannot be trusted either.
+# --- Step 4bis: ONE final, honestly-reported test AUC for the selected layer
+clf_best = LogisticRegression()
+clf_best.fit(X[i_train, best_layer:best_layer+1], y[i_train])
+final_test_auc = roc_auc_score(
+    y[i_test], clf_best.predict_proba(X[i_test, best_layer:best_layer+1])[:, 1])
+print(f"\nselected layer {best_layer} (by validation AUC = {best_val_auc:.3f}): "
+      f"test AUC = {final_test_auc:.3f}")
+
+# --- Step 4ter: permutation-label control (Hewitt & Liang, 2019) ----------
+# Layer selection tried n_layers candidates and kept the max: a single
+# permutation cannot control for that. Run many permutations and compare
+# the OBSERVED max validation AUC against the null DISTRIBUTION of the max
+# (not many separate per-layer checks). Within each text's group of
+# 1+N_DISTRACTORS candidates, the "correct" one is reassigned uniformly at
+# random, independent of which candidate actually is correct -- Delta_l can
+# then carry no real information about y_perm by construction.
+N_PERMUTATIONS = int(os.environ.get("CHENGYU_N_PERM", "20"))
 perm_rng = random.Random(SEED + 1)
-y_perm = y.copy()
-for _, group in data.groupby("text_id"):
-    idx = group.index.to_numpy()
-    y_perm[idx] = 0
-    y_perm[perm_rng.choice(idx.tolist())] = 1
 
-print(f"\n{'layer':>7} {'perm AUC':>9}")
-perm_aucs = []
-for l in range(n_layers):
-    clf = LogisticRegression()
-    clf.fit(X[i_train, l:l+1], y_perm[i_train])
-    proba = clf.predict_proba(X[i_test, l:l+1])[:, 1]
-    auc = roc_auc_score(y_perm[i_test], proba)
-    perm_aucs.append(auc)
-    print(f"{l:>7} {auc:>9.3f}")
 
-# --- Step 4ter: plot AUC(layer), real vs. permuted-label control ----------
+def permuted_labels(rng):
+    y_perm = y.copy()
+    for _, group in data.groupby("text_id"):
+        idx = group.index.to_numpy()
+        y_perm[idx] = 0
+        y_perm[rng.choice(idx.tolist())] = 1
+    return y_perm
+
+
+max_perm_val_aucs = []
+perm_aucs_for_plot = None   # one representative permutation, for the figure
+for b in range(N_PERMUTATIONS):
+    y_perm = permuted_labels(perm_rng)
+    perm_aucs_b = []
+    for l in range(n_layers):
+        clf = LogisticRegression()
+        clf.fit(X[i_train, l:l+1], y_perm[i_train])
+        proba = clf.predict_proba(X[i_val, l:l+1])[:, 1]
+        perm_aucs_b.append(roc_auc_score(y_perm[i_val], proba))
+    max_perm_val_aucs.append(max(perm_aucs_b))
+    if b == 0:
+        perm_aucs_for_plot = perm_aucs_b
+
+p_value = (1 + sum(t >= best_val_auc for t in max_perm_val_aucs)) / (N_PERMUTATIONS + 1)
+print(f"\nmax-statistic permutation test ({N_PERMUTATIONS} permutations): "
+      f"observed max val AUC = {best_val_auc:.3f}, "
+      f"p = {p_value:.3f} (fraction of permuted max-AUCs >= observed)")
+
+# single permutation check on the FINAL test AUC -- no multiple-comparison
+# issue here, since only one (already-selected) layer is being evaluated.
+# If it doesn't hug ~0.5, the pipeline (not Delta_l) is producing the
+# apparent signal, and the real-label AUCs above cannot be trusted either.
+y_perm_test = permuted_labels(random.Random(SEED + 2))
+clf_best_perm = LogisticRegression()
+clf_best_perm.fit(X[i_train, best_layer:best_layer+1], y_perm_test[i_train])
+final_test_perm_auc = roc_auc_score(
+    y_perm_test[i_test], clf_best_perm.predict_proba(X[i_test, best_layer:best_layer+1])[:, 1])
+
+# --- Step 4quat: plot validation-AUC(layer), real vs. permuted-label control
 # One curve over all observations pooled together. The full AUC(l) line is
 # what matters; the marked point is a landmark, not the only thing to read
 # — a broad, stable bump across neighboring layers is more credible than an
-# isolated spike. The permuted curve should hug the chance line: if it
-# doesn't, that undermines the real curve too (Step 6 below).
+# isolated spike.
 layers = [l for l, _, _ in layer_results]
-aucs = [a for _, a, _ in layer_results]
+val_aucs = [a for _, a, _ in layer_results]
 
 fig, ax = plt.subplots(figsize=(7, 4))
 ax.axhline(0.5, color="#93a4b8", linestyle="--", linewidth=1,
            label="chance (AUC = 0.5)")
-ax.plot(layers, aucs, color="#1f5c8a", linewidth=2, marker="o",
-        markersize=4, label="AUC by layer")
-ax.plot(layers, perm_aucs, color="#c0783c", linewidth=1.5, marker="o",
+ax.plot(layers, val_aucs, color="#1f5c8a", linewidth=2, marker="o",
+        markersize=4, label="validation AUC by layer")
+ax.plot(layers, perm_aucs_for_plot, color="#c0783c", linewidth=1.5, marker="o",
         markersize=3, linestyle="--", alpha=0.85,
-        label="permuted-label control")
-ax.scatter([best_layer], [best_auc], color="#1f5c8a", s=70,
+        label="permuted-label control (1 of B permutations)")
+ax.scatter([best_layer], [best_val_auc], color="#1f5c8a", s=70,
            zorder=5, edgecolor="white", linewidth=1)
-ax.annotate(f"layer {best_layer}\nAUC={best_auc:.3f}",
-            (best_layer, best_auc), textcoords="offset points",
+ax.annotate(f"layer {best_layer}\nval AUC={best_val_auc:.3f}\ntest AUC={final_test_auc:.3f}",
+            (best_layer, best_val_auc), textcoords="offset points",
             xytext=(8, 10), fontsize=9, color="#1f5c8a")
 ax.set_xlabel("layer l (0 = embeddings)")
-ax.set_ylabel("AUC (test, grouped by text)")
+ax.set_ylabel("AUC (validation, grouped by text)")
 ax.set_title(f"Separability of Delta_l(i,t) by layer -- n={evaluated} texts, "
              f"{N_DISTRACTORS} distractors/text")
 ax.set_ylim(0.0, 1.0)
@@ -245,30 +299,39 @@ print(f"\nAUC(layer) curve saved: {FIGURE}")
 # p(y=1 | Delta_0..Delta_L) = sigmoid(sum_l w_l*Delta_l + b). If this beats
 # the best single layer clearly, the signal is spread across layers
 # (complementary, not redundant); otherwise one layer carries it essentially
-# alone and the others only add noise.
-clf_multi = LogisticRegression(max_iter=1000)
-clf_multi.fit(X[i_train], y[i_train])
-proba_multi = clf_multi.predict_proba(X[i_test])[:, 1]
-auc_multi = roc_auc_score(y[i_test], proba_multi)
-acc_multi = accuracy_score(y[i_test], clf_multi.predict(X[i_test]))
+# alone and the others only add noise. No layer selection here (a single
+# model, not compared against alternatives), so train/test needs no
+# validation set. Standardized using TRAIN-set statistics only: layers can
+# have very different variances and are strongly correlated, so an
+# unstandardized coefficient's magnitude doesn't reflect how much a layer
+# actually matters -- only after standardizing are |weight| values
+# comparable across layers.
+mu_train = X[i_train].mean(axis=0)
+sigma_train = np.maximum(X[i_train].std(axis=0), 1e-8)
+X_std = (X - mu_train) / sigma_train
 
-print(f"\nmultivariate model (all {n_layers} layers together): "
+clf_multi = LogisticRegression(max_iter=1000)
+clf_multi.fit(X_std[i_train], y[i_train])
+proba_multi = clf_multi.predict_proba(X_std[i_test])[:, 1]
+auc_multi = roc_auc_score(y[i_test], proba_multi)
+acc_multi = accuracy_score(y[i_test], clf_multi.predict(X_std[i_test]))
+
+print(f"\nmultivariate model (all {n_layers} layers together, standardized): "
       f"AUC = {auc_multi:.3f}  accuracy = {acc_multi:.1%}")
 
 coeffs = sorted(enumerate(clf_multi.coef_[0]), key=lambda c: -abs(c[1]))[:5]
-print("most influential layers in the multivariate model (largest |weight|):",
+print("most influential layers in the multivariate model (largest |standardized weight|):",
       ", ".join(f"layer {l} (weight={c:+.2f})" for l, c in coeffs))
 
 # --- Step 6: permutation-label control task, multivariate model ----------
-# Reuses y_perm from Step 4bis (same random relabeling, one per text).
+y_perm_multi = permuted_labels(random.Random(SEED + 3))
 clf_multi_perm = LogisticRegression(max_iter=1000)
-clf_multi_perm.fit(X[i_train], y_perm[i_train])
-proba_multi_perm = clf_multi_perm.predict_proba(X[i_test])[:, 1]
-auc_multi_perm = roc_auc_score(y_perm[i_test], proba_multi_perm)
-best_perm_auc = max(perm_aucs)
+clf_multi_perm.fit(X_std[i_train], y_perm_multi[i_train])
+proba_multi_perm = clf_multi_perm.predict_proba(X_std[i_test])[:, 1]
+auc_multi_perm = roc_auc_score(y_perm_multi[i_test], proba_multi_perm)
 print(f"\nmultivariate model on permuted labels: AUC = {auc_multi_perm:.3f}")
 print(f"""
-Control task reading: best permuted-label AUC = {best_perm_auc:.3f},
+Control task reading: final-layer test permuted-label AUC = {final_test_perm_auc:.3f},
 multivariate permuted-label AUC = {auc_multi_perm:.3f} (both should be close
 to 0.5). If either is as high as the corresponding real-label AUC above,
 that is evidence of a leak or bug in the evaluation pipeline, not of
@@ -280,9 +343,13 @@ print(f"""
 Summary:
 - baseline {baseline_rate:.1%} (always "distractor"): any AUC close to
   0.5 means Delta_l carries no usable signal at that layer.
-- best single layer: {best_layer} (AUC = {best_auc:.3f}).
-- multivariate AUC ({auc_multi:.3f}) vs. best single layer ({best_auc:.3f}):
+- best single layer: {best_layer} (selected by validation AUC = {best_val_auc:.3f},
+  honest held-out test AUC = {final_test_auc:.3f}).
+- multivariate AUC ({auc_multi:.3f}) vs. selected single layer ({final_test_auc:.3f}):
   close -> layer {best_layer} carries essentially all the signal (candidate
   for text_proposer, chapter section 12.2); clearly higher -> several
   layers complement each other, consider combining rather than picking one.
+- layer-selection significance: p = {p_value:.3f} ({N_PERMUTATIONS} permutations,
+  max-statistic test) -- probability that random noise alone would produce
+  a best-of-{n_layers}-layers validation AUC at least this high.
 """)
