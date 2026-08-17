@@ -15,14 +15,179 @@ from chengyu.representation import load_text_state_stats, text_state_by_layer
 from chengyu.scoring import score_summary
 
 
-def log_weight(text, idiom):
-    return score_summary(text, idiom) + log_prior(idiom)   # score_summary = PyTorch, internally
+def log_weight(text, idiom, cache=None):
+    """h_t(idiom) = log p_theta(text|idiom) + log p(idiom). cache: optional
+    {(text, idiom): value} dict, shared between metropolis_hastings' own
+    acceptance-check calls and a proposer's internal scoring (e.g.
+    mixture_proposer scoring a neighborhood) -- so the same idiom scored
+    by both is only ever a real model call once."""
+    if cache is not None and (text, idiom) in cache:
+        return cache[(text, idiom)]
+    value = score_summary(text, idiom) + log_prior(idiom)   # score_summary = PyTorch, internally
+    if cache is not None:
+        cache[(text, idiom)] = value
+    return value
 
 
-def metropolis_hastings(text, initial_state, proposer, n_steps, seed=0, progress_every=None):
+def edit_distance_1_graph(idioms: list) -> dict:
+    """{idiom: set of neighbors} at edit distance 1 (substitution,
+    insertion, or deletion of exactly one character), over the WHOLE
+    dictionary (all lengths). Checked directly on this project's
+    dictionary: ~47.7% of idioms are isolated at D=1, and this does not
+    improve at D=2 or D=3 -- those idioms sit in their own disconnected
+    component, not just "far" -- so the local-edit proposal alone cannot
+    be irreducible; see mixture_proposer's length-aware global jump."""
+    by_length = {}
+    for i in idioms:
+        by_length.setdefault(len(i), set()).add(i)
+
+    adj = {i: set() for i in idioms}
+
+    # substitution: same length, differ at exactly one position
+    for n, group in by_length.items():
+        group_list = list(group)
+        for j in range(n):
+            patterns = {}
+            for idiom in group_list:
+                patterns.setdefault(idiom[:j] + "\0" + idiom[j + 1:], []).append(idiom)
+            for members in patterns.values():
+                if len(members) > 1:
+                    for a in members:
+                        adj[a].update(m for m in members if m != a)
+
+    # insertion/deletion: idiom with one character removed matches a
+    # dictionary entry one character shorter
+    for idiom in idioms:
+        n = len(idiom)
+        shorter_group = by_length.get(n - 1)
+        if shorter_group:
+            for i in range(n):
+                shorter = idiom[:i] + idiom[i + 1:]
+                if shorter in shorter_group:
+                    adj[idiom].add(shorter)
+                    adj[shorter].add(idiom)
+
+    return adj
+
+
+def _bfs_ball(adj: dict, start: str, radius: int) -> set:
+    """Nodes reachable from `start` within `radius` hops of `adj` (excludes
+    `start` itself)."""
+    visited = {start}
+    frontier = {start}
+    for _ in range(radius):
+        next_frontier = set()
+        for node in frontier:
+            for nb in adj[node]:
+                if nb not in visited:
+                    visited.add(nb)
+                    next_frontier.add(nb)
+        frontier = next_frontier
+        if not frontier:
+            break
+    visited.discard(start)
+    return visited
+
+
+def mixture_proposer(idioms: list, text: str, D: int = 1, epsilon: float = 0.1,
+                      alpha: float = 0.5, temperature_loc: float = 1.0, cache=None):
+    """q_eps(y|x,t) = (1-eps) q_loc(y|x,t) + eps q_len(y).
+
+    q_loc: softmax, temperature temperature_loc, of h_t(y) = log_weight(text, y)
+    (the SAME target score used everywhere else -- no separate scoring
+    scheme) over N_D(x), the idioms within edit distance D of x. This
+    directly asks "among dictionary idioms structurally close to x, which
+    have good posterior scores for text t", rather than generating a
+    replacement character in isolation.
+
+    q_len: a length-aware global jump, so the chain can reach idioms of
+    ANY length (and any idiom at all, including the ~47.7% with no local
+    neighbor) regardless of how skewed the dictionary's length
+    distribution is: sample a length n with probability proportional to
+    |I_n|^alpha (alpha=1 recovers the plain uniform-over-dictionary
+    distribution; alpha=0 makes every length equally likely), then sample
+    uniformly among idioms of that length.
+
+    When N_D(x) is empty, the local branch has nothing to propose, so it
+    proposes staying at x (a self-loop, matching the theory's Algorithm 2:
+    "if N_D(x) = empty, set y <- x") -- the (1-eps) local weight is not
+    silently redirected into q_len. q_eps(y|x,t) is still a valid,
+    correctly normalised distribution, and still > 0 for every x, y
+    (via the eps * q_len(y) term alone), so irreducibility holds
+    regardless of the edit-distance graph's disconnected components."""
+    adj = edit_distance_1_graph(idioms)
+    balls = {x: _bfs_ball(adj, x, D) for x in idioms}
+
+    by_length = {}
+    for i in idioms:
+        by_length.setdefault(len(i), []).append(i)
+    lengths = list(by_length)
+    raw = {n: len(by_length[n]) ** alpha for n in lengths}
+    z_len = sum(raw.values())
+    nu = {n: raw[n] / z_len for n in lengths}
+
+    def q_len_prob(idiom):
+        return nu[len(idiom)] / len(by_length[len(idiom)])
+
+    def sample_q_len(rng):
+        n = rng.choices(lengths, weights=[nu[l] for l in lengths])[0]
+        return rng.choice(by_length[n])
+
+    def q_loc_probs(x):
+        """{y: probability} over N_D(x), or None if x has no local neighbor."""
+        ball = balls[x]
+        if not ball:
+            return None
+        scores = {y: log_weight(text, y, cache=cache) for y in ball}
+        m = max(scores.values())
+        weights = {y: math.exp((s - m) / temperature_loc) for y, s in scores.items()}
+        z = sum(weights.values())
+        return {y: w / z for y, w in weights.items()}
+
+    def q_prob(target, source, source_loc_probs):
+        """q_eps(target | source, t), given source's own q_loc_probs (or
+        None if source has no local neighbor). When source has no local
+        neighbor, the LOCAL branch proposes staying at source (Algorithm 2:
+        "if N_D(x) = empty, set y <- x"), not a fallback to q_len -- so
+        the (1-eps) local weight lands entirely on target == source in
+        that case, not spread over q_len."""
+        if source_loc_probs is None:
+            self_loop = (1 - epsilon) if target == source else 0.0
+            return self_loop + epsilon * q_len_prob(target)
+        loc = source_loc_probs.get(target, 0.0)
+        return (1 - epsilon) * loc + epsilon * q_len_prob(target)
+
+    def propose(current, rng):
+        loc_probs = q_loc_probs(current)   # needed either way: even a
+                                            # y drawn from q_len can still
+                                            # carry local probability mass
+        if rng.random() < epsilon:
+            y = sample_q_len(rng)
+        elif loc_probs is None:
+            y = current                    # local branch, no neighbor: self-loop
+        else:
+            candidates = list(loc_probs)
+            y = rng.choices(candidates, weights=[loc_probs[c] for c in candidates])[0]
+
+        y_loc_probs = q_loc_probs(y)
+        fwd = q_prob(y, current, loc_probs)
+        rev = q_prob(current, y, y_loc_probs)
+        log_hastings = math.log(rev) - math.log(fwd)
+        return y, log_hastings
+
+    return propose
+
+
+def metropolis_hastings(text, initial_state, proposer, n_steps, seed=0,
+                         progress_every=None, cache=None):
     """progress_every: if set, prints a status line every that many steps.
     Off by default, since this function is also called from contexts
     (e.g. a future API endpoint) where console output isn't wanted.
+    cache: optional {(text, idiom): h_t(idiom)} dict, shared with the
+    proposer (e.g. mixture_proposer) if it also scores idioms, so a
+    candidate the proposer already scored internally isn't scored again
+    here -- important for a fair "equal number of model calls" comparison
+    between proposers with very different per-step costs.
     Returns (trace, accepted): accepted[m] is True iff the proposal at
     step m+1 was accepted -- distinct from trace[m] != trace[m-1], since
     an accepted proposal can re-propose the current state (e.g. an
@@ -30,13 +195,13 @@ def metropolis_hastings(text, initial_state, proposer, n_steps, seed=0, progress
     state)."""
     rng      = random.Random(seed)
     current  = initial_state
-    lw       = log_weight(text, current)
+    lw       = log_weight(text, current, cache=cache)
     trace    = []
     accepted = []
     start    = time.time()
     for step in range(n_steps):
         candidate, log_hastings = proposer(current, rng)
-        lw2 = log_weight(text, candidate)                    # 1 Qwen call (PyTorch inside)
+        lw2 = log_weight(text, candidate, cache=cache)       # 1 Qwen call (PyTorch inside)
         accept = math.log(rng.random()) < (lw2 - lw) + log_hastings
         if accept:
             current, lw = candidate, lw2
