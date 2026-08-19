@@ -21,6 +21,25 @@ def idioms_of_length(dictionary: set, n: int) -> list:
     return [i for i in dictionary if len(i) == n]
 
 
+def sample_length_matched_distractors(target: str, by_length: dict, k: int, rng) -> list:
+    """K distractor idioms for `target`, sampled first from idioms of the
+    SAME length as the target (the candidate set I_n) -- so a candidate
+    can't be told apart from the target purely by having a different
+    character count, a shortcut unrelated to whether it actually fits the
+    text (the dictionary is 95.4% length-4 idioms, so a uniform sample would
+    almost always make a non-length-4 target the odd one out by length
+    alone). Falls back to idioms of OTHER lengths only if I_n itself has
+    fewer than k members besides the target.
+    `by_length`: {length: list of idioms}, built once from a SORTED idiom
+    list (set iteration order depends on PYTHONHASHSEED -- see script 09),
+    not rebuilt on every call."""
+    same_length = [i for i in by_length[len(target)] if i != target]
+    if len(same_length) >= k:
+        return rng.sample(same_length, k)
+    rest = [i for n, idioms in by_length.items() if n != len(target) for i in idioms if i != target]
+    return same_length + rng.sample(rest, k - len(same_length))
+
+
 def idioms_present(normalized_text: str, dictionary: set, lengths) -> set:
     """All dictionary idioms present in the (already normalized) text.
        Method: sliding window + O(1) set membership test.
