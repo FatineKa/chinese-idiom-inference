@@ -5,6 +5,11 @@ of only through a fitted classifier (script 09's AUC)?
 
 For each held-out VALIDATION text: 1 target idiom + K distractors (the SAME
 candidate set for every metric, so the three metrics are compared fairly).
+Distractors are length-matched to the target (sample_length_matched_distractors,
+must sample identically to script 16) -- the dictionary is 95.4% length-4
+idioms, so a uniform sample would almost always make a non-length-4 target
+(2.4% of this corpus's texts) the odd one out by character count alone, a
+shortcut unrelated to whether it actually fits the text.
 Three distance metrics per candidate per layer:
   A. cosine        Delta_l^cos = 1 - cos(e^(0), e^(l))
   B. standardized cosine  (standardize coordinates first, then cosine)
@@ -33,7 +38,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from chengyu.evaluation import find_idiom, load_dictionary, normalize
+from chengyu.evaluation import (
+    find_idiom, load_dictionary, normalize, sample_length_matched_distractors,
+)
 from chengyu.representation import (
     context_states_batch, cosine_delta, euclidean_delta,
     load_context_state_stats, standardized_delta,
@@ -72,6 +79,10 @@ METRIC_COLOR = {"cos": "#1f5c8a", "std": "#2f7d55", "euc": "#c0783c"}
 rng = random.Random(SEED)
 dictionary, lengths = load_dictionary()
 idiom_list = sorted(dictionary)
+by_length = {}   # {length: sorted list of idioms} -- for length-matched
+                  # distractor sampling (must match script 16's grouping)
+for i in idiom_list:
+    by_length.setdefault(len(i), []).append(i)
 df = pd.read_csv("data/raw/cip/train.csv")
 df = (
     df[~df["dst"].map(normalize).duplicated()]   # dedupe by NORMALIZED text
@@ -96,7 +107,7 @@ for src, dst in zip(df["src"], df["dst"]):
         skip_found += 1
         continue
     text = normalize(dst)
-    distractors = rng.sample([i for i in idiom_list if i != target], K_DISTRACTORS)
+    distractors = sample_length_matched_distractors(target, by_length, K_DISTRACTORS, rng)
     for idiom, is_target in [(target, True)] + [(d, False) for d in distractors]:
         to_evaluate.append((text_id, idiom, text, is_target))
     text_id += 1

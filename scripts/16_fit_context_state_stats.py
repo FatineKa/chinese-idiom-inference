@@ -17,7 +17,11 @@ no extra model calls beyond the calibration pairs themselves.
 Both target AND distractor idioms are included in the calibration
 population, matching scripts/09_classification_delta.py's evaluation-set
 shape (1 target + K distractors per text) -- fitting only on targets would
-bias the normalization toward the positive class.
+bias the normalization toward the positive class. Distractors are
+length-matched to their target (sample_length_matched_distractors) -- the
+dictionary is 95.4% length-4 idioms, so a uniform sample would almost always
+make a non-length-4 target the odd one out by character count alone, a
+shortcut unrelated to whether it fits the text.
 
 Calibration texts are a fixed prefix of the same SEED-shuffled train.csv
 order that scripts/17_delta_controlled_test.py uses; script 17 skips this
@@ -29,7 +33,9 @@ import random
 import numpy as np
 import pandas as pd
 
-from chengyu.evaluation import find_idiom, load_dictionary, normalize
+from chengyu.evaluation import (
+    find_idiom, load_dictionary, normalize, sample_length_matched_distractors,
+)
 from chengyu.representation import context_states_batch
 from chengyu.scoring import MODEL
 
@@ -46,6 +52,10 @@ rng = random.Random(SEED)
 dictionary, lengths = load_dictionary()
 idiom_list = sorted(dictionary)   # sorted, not list(): set iteration order
                         # depends on PYTHONHASHSEED -- see script 09
+by_length = {}   # {length: sorted list of idioms} -- for length-matched
+                  # distractor sampling (representation-study length check)
+for i in idiom_list:
+    by_length.setdefault(len(i), []).append(i)
 df = pd.read_csv("data/raw/cip/train.csv")
 df = (
     df[~df["dst"].map(normalize).duplicated()]   # dedupe by NORMALIZED text
@@ -68,7 +78,7 @@ for src, dst in zip(df["src"], df["dst"]):
     if target is None:
         continue
     text = normalize(dst)
-    distractors = rng.sample([i for i in idiom_list if i != target], K_DISTRACTORS)
+    distractors = sample_length_matched_distractors(target, by_length, K_DISTRACTORS, rng)
     for idiom in [target] + distractors:
         pairs.append((idiom, text))
     found += 1
