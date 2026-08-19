@@ -170,10 +170,16 @@ for metric in METRICS:
         target_vals = values[:, 0]           # column 0 = target (Step 1's order)
         distractor_vals = values[:, 1:]      # columns 1.. = distractors
 
-        # pairwise: pool every (target, distractor) pair across all texts
+        # pairwise: pool every (target, distractor) pair across all texts. A
+        # tie counts as HALF a win (same convention AUC uses for tied
+        # scores) -- without this, layer 0 (where every candidate is
+        # EXACTLY tied at Delta=0 by definition, the baseline compared to
+        # itself) would score a fake 100%, since "not a strict win" got
+        # silently read as "a win for the opposite direction".
         wins = int((target_vals[:, None] > distractor_vals).sum())
+        ties = int((target_vals[:, None] == distractor_vals).sum())
         total = distractor_vals.size
-        W_l = wins / total
+        W_l = (wins + 0.5 * ties) / total
 
         if W_l >= 0.5:
             direction, pairwise_rate = "bigger", W_l
@@ -181,9 +187,17 @@ for metric in METRICS:
             direction, pairwise_rate = "smaller", 1 - W_l
 
         # top-1: under the chosen direction, is the target (column 0) the
-        # single best candidate among all K+1?
-        idx_best = values.argmax(axis=1) if direction == "bigger" else values.argmin(axis=1)
-        top1_rate = float((idx_best == 0).mean())
+        # single best candidate among all K+1? When several candidates tie
+        # for best, split credit evenly among them (expected accuracy under
+        # random tie-breaking) instead of always crediting whichever column
+        # happens to come first -- argmax/argmin would otherwise always
+        # "pick" the target at layer 0, since it sits in column 0 and every
+        # candidate is tied there.
+        best_val = values.max(axis=1, keepdims=True) if direction == "bigger" else values.min(axis=1, keepdims=True)
+        is_best = values == best_val
+        n_tied = is_best.sum(axis=1)
+        target_credit = np.where(is_best[:, 0], 1.0 / n_tied, 0.0)
+        top1_rate = float(target_credit.mean())
 
         results[metric]["W"].append(W_l)
         results[metric]["direction"].append(direction)
