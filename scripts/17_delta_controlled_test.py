@@ -53,7 +53,11 @@ SEED = 0                # must match scripts/16_fit_context_state_stats.py
 N_CALIBRATION_SKIP = int(os.environ.get("CHENGYU_N_CALIBRATION", "100"))
                         # must match script 16's CHENGYU_N_CALIBRATION, or
                         # the two texts sets can overlap
-N_VAL_TEXTS = int(os.environ.get("CHENGYU_N_VAL", "200"))
+_n_val_env = os.environ.get("CHENGYU_N_VAL")
+N_VAL_TEXTS = int(_n_val_env) if _n_val_env else None
+                        # None (CHENGYU_N_VAL unset) = every valid text left
+                        # after the calibration skip -- same convention as
+                        # script 09's CHENGYU_N_TEXTS
 K_DISTRACTORS = int(os.environ.get("CHENGYU_K", "20"))
 BATCH_SIZE = int(os.environ.get("CHENGYU_BATCH", "32"))
 
@@ -76,7 +80,7 @@ to_evaluate = []   # (text_id, idiom, text, is_target)
 skip_found = 0
 text_id = 0
 for src, dst in zip(df["src"], df["dst"]):
-    if text_id >= N_VAL_TEXTS:
+    if N_VAL_TEXTS is not None and text_id >= N_VAL_TEXTS:
         break
     target = find_idiom(src, dst, dictionary, lengths)
     if target is None:
@@ -146,22 +150,29 @@ print(f"\nobservations: {len(data)}  (n_layers={n_layers})\n")
 
 # --- Step 3: for each metric x layer, direction (W_l), pairwise success
 # rate, and Top-1 rate, all on this same validation set (exploratory pass --
-# see module docstring for why no further split is needed here) -----------
+# see module docstring for why no further split is needed here). Vectorized
+# via reshape rather than a pandas groupby per (metric, layer): Step 1 built
+# to_evaluate with exactly K_DISTRACTORS+1 rows per text, target first, and
+# that order is preserved all the way into `data` -- so a column's values
+# reshape directly into (n_texts, K_DISTRACTORS+1) with no grouping needed.
+# Matters at full-dataset scale (CHENGYU_N_VAL unset, tens of thousands of
+# texts), where a fresh groupby per (metric, layer) would be far slower. ---
+assert len(data) == n_texts * (K_DISTRACTORS + 1), \
+    "expected exactly K_DISTRACTORS+1 rows per validation text, in order"
+
 results = {m: {"W": [], "direction": [], "pairwise": [], "top1": []} for m in METRICS}
 chance_top1 = 1 / (K_DISTRACTORS + 1)
 
 for metric in METRICS:
     for l in range(n_layers):
         col = f"{metric}_{l}"
+        values = data[col].to_numpy().reshape(n_texts, K_DISTRACTORS + 1)
+        target_vals = values[:, 0]           # column 0 = target (Step 1's order)
+        distractor_vals = values[:, 1:]      # columns 1.. = distractors
 
         # pairwise: pool every (target, distractor) pair across all texts
-        wins = total = 0
-        top1_hits = 0
-        for _, group in data.groupby("text_id"):
-            target_delta = group.loc[group["is_target"], col].iloc[0]
-            distractor_deltas = group.loc[~group["is_target"], col]
-            wins += int((target_delta > distractor_deltas).sum())
-            total += len(distractor_deltas)
+        wins = int((target_vals[:, None] > distractor_vals).sum())
+        total = distractor_vals.size
         W_l = wins / total
 
         if W_l >= 0.5:
@@ -169,14 +180,10 @@ for metric in METRICS:
         else:
             direction, pairwise_rate = "smaller", 1 - W_l
 
-        # top-1: under the chosen direction, is the target the single best
-        # candidate among all K+1?
-        for _, group in data.groupby("text_id"):
-            values = group[col].to_numpy()
-            idx_best = values.argmax() if direction == "bigger" else values.argmin()
-            if group["is_target"].to_numpy()[idx_best]:
-                top1_hits += 1
-        top1_rate = top1_hits / n_texts
+        # top-1: under the chosen direction, is the target (column 0) the
+        # single best candidate among all K+1?
+        idx_best = values.argmax(axis=1) if direction == "bigger" else values.argmin(axis=1)
+        top1_rate = float((idx_best == 0).mean())
 
         results[metric]["W"].append(W_l)
         results[metric]["direction"].append(direction)
