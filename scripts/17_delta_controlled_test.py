@@ -38,6 +38,7 @@ from chengyu.representation import (
     context_states_batch, cosine_delta, euclidean_delta,
     load_context_state_stats, standardized_delta,
 )
+from chengyu.scoring import MODEL
 
 FIGURE_PAIRWISE = "results/figures/17_pairwise_rate_par_couche.png"
 FIGURE_TOP1 = "results/figures/17_top1_rate_par_couche.png"
@@ -50,14 +51,17 @@ os.makedirs(os.path.dirname(FIGURE_PAIRWISE), exist_ok=True)
 os.makedirs(os.path.dirname(DATA_OUT), exist_ok=True)
 
 SEED = 0                # must match scripts/16_fit_context_state_stats.py
-N_CALIBRATION_SKIP = int(os.environ.get("CHENGYU_N_CALIBRATION", "100"))
+N_CALIBRATION_SKIP = int(os.environ.get("CHENGYU_N_CALIBRATION", "300"))
                         # must match script 16's CHENGYU_N_CALIBRATION, or
                         # the two texts sets can overlap
-_n_val_env = os.environ.get("CHENGYU_N_VAL")
-N_VAL_TEXTS = int(_n_val_env) if _n_val_env else None
-                        # None (CHENGYU_N_VAL unset) = every valid text left
-                        # after the calibration skip -- same convention as
-                        # script 09's CHENGYU_N_TEXTS
+N_VAL_TEXTS = int(os.environ.get("CHENGYU_N_VAL", "500"))
+                        # deliberately a safe, finite default -- this stage
+                        # is an exploratory pass (see module docstring), not
+                        # the "run on everything" full-dataset study. To
+                        # process every remaining valid text, pass an
+                        # explicit large number (e.g. CHENGYU_N_VAL=200000):
+                        # the loop below simply runs out of rows and stops,
+                        # no special "unlimited" mode needed.
 K_DISTRACTORS = int(os.environ.get("CHENGYU_K", "20"))
 BATCH_SIZE = int(os.environ.get("CHENGYU_BATCH", "32"))
 
@@ -68,8 +72,11 @@ METRIC_COLOR = {"cos": "#1f5c8a", "std": "#2f7d55", "euc": "#c0783c"}
 rng = random.Random(SEED)
 dictionary, lengths = load_dictionary()
 idiom_list = sorted(dictionary)
+df = pd.read_csv("data/raw/cip/train.csv")
 df = (
-    pd.read_csv("data/raw/cip/train.csv")
+    df[~df["dst"].map(normalize).duplicated()]   # dedupe by NORMALIZED text
+                        # before splitting -- must match script 16's dedupe
+                        # exactly, or the two texts sets can drift apart
     .sample(frac=1, random_state=SEED)
     .reset_index(drop=True)
 )
@@ -80,7 +87,7 @@ to_evaluate = []   # (text_id, idiom, text, is_target)
 skip_found = 0
 text_id = 0
 for src, dst in zip(df["src"], df["dst"]):
-    if N_VAL_TEXTS is not None and text_id >= N_VAL_TEXTS:
+    if text_id >= N_VAL_TEXTS:
         break
     target = find_idiom(src, dst, dictionary, lengths)
     if target is None:
@@ -117,6 +124,21 @@ for start in range(0, len(to_evaluate), BATCH_SIZE):
     if n_layers is None:
         n_layers = states.shape[1]
         calib_stats = {l: load_context_state_stats(l) for l in range(n_layers)}
+
+        # sanity-check the calibration file's metadata (script 16) against
+        # this run's own config, so a stale/mismatched file fails loudly
+        # instead of silently standardizing with the wrong population
+        meta = np.load("data/context_state_stats_layer0.npz")
+        if str(meta["model"]) != MODEL:
+            raise RuntimeError(
+                f"data/context_state_stats_layer0.npz was fit with model "
+                f"{meta['model']!r}, but this run uses {MODEL!r} -- rerun "
+                f"scripts/16_fit_context_state_stats.py")
+        if int(meta["seed"]) != SEED or int(meta["k_distractors"]) != K_DISTRACTORS:
+            print(f"WARNING: calibration stats were fit with seed={int(meta['seed'])}, "
+                  f"k_distractors={int(meta['k_distractors'])}, but this run uses "
+                  f"SEED={SEED}, K_DISTRACTORS={K_DISTRACTORS} -- still valid, "
+                  f"just not exactly the config scripts/16 was last run with")
 
     batch_rows = []
     for k, (tid, idiom, _text, is_target) in enumerate(batch):
@@ -213,15 +235,21 @@ for metric in METRICS:
 
 layers = list(range(n_layers))
 
-# --- Step 4: two figures, one line per metric -----------------------------
+# --- Step 4: two figures, one line per metric ------------------------------
+# Figure 1 plots the RAW W_l = P(Delta_l(target) > Delta_l(distractor)), not
+# the direction-corrected pairwise_rate = max(W_l, 1-W_l): picking whichever
+# direction looks better and THEN plotting that number guarantees a curve
+# that never dips below 50%, even for pure noise (max(W, 1-W) >= 0.5
+# always) -- so it would hide exactly the information (a below-50% W_l means
+# "smaller is better", not "no signal") this exploratory plot exists to show.
 fig, ax = plt.subplots(figsize=(7, 4))
-ax.axhline(0.5, color="#93a4b8", linestyle="--", linewidth=1, label="chance (50%)")
+ax.axhline(0.5, color="#93a4b8", linestyle="--", linewidth=1, label="no signal (50%)")
 for metric in METRICS:
-    ax.plot(layers, results[metric]["pairwise"], color=METRIC_COLOR[metric],
+    ax.plot(layers, results[metric]["W"], color=METRIC_COLOR[metric],
              linewidth=2, marker="o", markersize=3, label=METRIC_LABEL[metric])
 ax.set_xlabel("layer l (0 = embeddings)")
-ax.set_ylabel("pairwise success rate (validation)")
-ax.set_title(f"Target vs. distractor pairwise success rate by layer -- "
+ax.set_ylabel("P(Delta(target) > Delta(distractor))  (validation)")
+ax.set_title(f"Direction and strength of the Delta_l signal by layer -- "
              f"n={n_texts} texts, {K_DISTRACTORS} distractors/text")
 ax.set_ylim(0.0, 1.0)
 ax.spines["top"].set_visible(False)

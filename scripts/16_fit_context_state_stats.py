@@ -31,11 +31,12 @@ import pandas as pd
 
 from chengyu.evaluation import find_idiom, load_dictionary, normalize
 from chengyu.representation import context_states_batch
+from chengyu.scoring import MODEL
 
 SEED = 0                # must match scripts/17_delta_controlled_test.py's
                         # shuffle seed, so the two texts sets are disjoint
                         # prefixes/suffixes of the same order, not overlapping
-N_CALIBRATION_TEXTS = int(os.environ.get("CHENGYU_N_CALIBRATION", "100"))
+N_CALIBRATION_TEXTS = int(os.environ.get("CHENGYU_N_CALIBRATION", "300"))
 K_DISTRACTORS = int(os.environ.get("CHENGYU_K", "20"))   # matches the
                         # controlled test's K, so the calibration population
                         # has the same target:distractor shape as validation
@@ -45,8 +46,13 @@ rng = random.Random(SEED)
 dictionary, lengths = load_dictionary()
 idiom_list = sorted(dictionary)   # sorted, not list(): set iteration order
                         # depends on PYTHONHASHSEED -- see script 09
+df = pd.read_csv("data/raw/cip/train.csv")
 df = (
-    pd.read_csv("data/raw/cip/train.csv")
+    df[~df["dst"].map(normalize).duplicated()]   # dedupe by NORMALIZED text
+                        # before splitting -- otherwise the same underlying
+                        # text (present under two raw rows) could end up on
+                        # both the calibration and validation side, weakening
+                        # the "separate population" claim behind standardization
     .sample(frac=1, random_state=SEED)
     .reset_index(drop=True)
 )
@@ -88,7 +94,13 @@ for layer in range(n_layers):
                         # ~zero variance would otherwise blow up to inf/nan
                         # when used to standardize (representation.standardized_delta)
     np.savez(f"data/context_state_stats_layer{layer}.npz",
-             mu=mu, sigma=sigma, n_pairs=len(pairs), layer=layer)
+             mu=mu, sigma=sigma, n_pairs=len(pairs), layer=layer,
+             seed=SEED, k_distractors=K_DISTRACTORS,
+             n_calibration_texts=found, model=MODEL)
+                        # metadata beyond mu/sigma so scripts/17 can catch a
+                        # stale-file mismatch (e.g. a different Qwen
+                        # checkpoint) instead of silently standardizing with
+                        # the wrong population
 
 print(f"saved stats for layers 0..{n_layers - 1} to "
       f"data/context_state_stats_layer*.npz  (dim={all_states.shape[2]})")
