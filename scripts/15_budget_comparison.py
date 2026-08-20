@@ -26,6 +26,7 @@ Requires the real model (see chengyu/scoring.py)."""
 import os
 from collections import Counter
 
+import matplotlib.pyplot as plt
 import pandas as pd
 
 from chengyu.argmax import exact_posterior, text_scores
@@ -128,3 +129,38 @@ if EXACT_TVD:
     mean_tvd_u = sum(r["tvd_uniform"] for r in results) / len(results)
     mean_tvd_m = sum(r["tvd_mixture"] for r in results) / len(results)
     print(f"mean TVD to exact posterior -- uniform: {mean_tvd_u:.3f}  mixture: {mean_tvd_m:.3f}")
+
+# --- Figure: one point per text, uniform's rate vs. mixture's rate. Above
+# the diagonal = mixture won on that text, below = uniform won -- shows both
+# how often AND by how much, which the two means alone would hide. --------
+FIGURE = "results/figures/15_target_rate_comparison.png"
+os.makedirs(os.path.dirname(FIGURE), exist_ok=True)
+
+lo = 0.0
+hi = max(max(r["rate_uniform"], r["rate_mixture"]) for r in results) * 1.15
+colors = ["#1f5c8a" if r["rate_mixture"] > r["rate_uniform"] else "#c0783c"
+          for r in results]
+
+fig, ax = plt.subplots(figsize=(5.5, 5.5))
+ax.plot([lo, hi], [lo, hi], color="#93a4b8", linestyle="--", linewidth=1,
+        label="equal performance")
+ax.scatter([r["rate_uniform"] for r in results],
+           [r["rate_mixture"] for r in results],
+           c=colors, s=32, alpha=0.85, edgecolor="white", linewidth=0.5, zorder=3)
+ax.set_xlabel("uniform proposer: target-visit rate")
+ax.set_ylabel("mixture proposer: target-visit rate")
+ax.set_title(f"Which proposer finds the right idiom more often? -- "
+             f"{len(results)} texts, budget={BUDGET}")
+ax.set_xlim(lo, hi)
+ax.set_ylim(lo, hi)
+ax.set_aspect("equal")
+ax.spines["top"].set_visible(False)
+ax.spines["right"].set_visible(False)
+ax.legend(frameon=False, loc="upper left")
+ax.text(0.98, 0.02,
+        f"mixture wins {wins}/{len(results)} texts\n"
+        f"mean -- uniform: {mean_u:.1%}, mixture: {mean_m:.1%}",
+        transform=ax.transAxes, ha="right", va="bottom", fontsize=9, color="#4a5568")
+fig.tight_layout()
+fig.savefig(FIGURE, dpi=150)
+print(f"\nfigure saved: {FIGURE}")
