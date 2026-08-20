@@ -2,11 +2,14 @@
 pairwise success rate and Top-1 rate for ONE pre-committed configuration
 (metric, layer, direction), on texts nothing has ever been picked from.
 
-This is the missing third stage of the pipeline:
-    calibration (script 16)  -> estimate mu_l, sigma_l
-    validation  (script 17)  -> explore all 3 metrics x every layer,
+This is the third stage of the pipeline:
+    validation  (script 17)  -> explore cosine and Euclidean x every layer,
                                  pick metric*, layer*, direction* BY EYE
     final test  (this script) -> freeze that one pick, report ONE number
+
+(A third metric, standardized cosine, was tried and dropped -- it needed its
+own calibration stage, which was retired along with it once the metric
+consistently lost to the other two -- see the chapter's design note.)
 
 The configuration is NOT re-derived here -- it's read from
 CHENGYU_FINAL_METRIC / CHENGYU_FINAL_LAYER / CHENGYU_FINAL_DIRECTION (or the
@@ -23,9 +26,9 @@ quietly re-explore this "final" test set for an even better layer later,
 which would undo the point of freezing a choice before looking.
 
 Test texts: data/raw/cip/in_domain/test.in.csv, an OFFICIAL held-out split
-of this dataset (same src/dst format as train.csv) that neither script 16
-nor script 17 has ever read -- genuinely untouched, no need to carve out or
-track a boundary within train.csv itself."""
+of this dataset (same src/dst format as train.csv) that script 17 never
+reads -- genuinely untouched, no need to carve out or track a boundary
+within train.csv itself."""
 import os
 import random
 
@@ -35,22 +38,18 @@ import pandas as pd
 from chengyu.evaluation import (
     find_idiom, load_dictionary, normalize, sample_length_matched_distractors,
 )
-from chengyu.representation import (
-    context_states_batch, cosine_delta, euclidean_delta,
-    load_context_state_stats, standardized_delta,
-)
-from chengyu.scoring import MODEL
+from chengyu.representation import context_states_batch, cosine_delta, euclidean_delta
 
 TEST_FILE = "data/raw/cip/in_domain/test.in.csv"
 DATA_OUT = "results/outputs/18_final_test_deltas.csv"
 os.makedirs(os.path.dirname(DATA_OUT), exist_ok=True)
 
-METRIC = os.environ.get("CHENGYU_FINAL_METRIC", "cos")          # cos/std/euc
+METRIC = os.environ.get("CHENGYU_FINAL_METRIC", "cos")          # cos/euc
 LAYER = int(os.environ.get("CHENGYU_FINAL_LAYER", "11"))
 DIRECTION = os.environ.get("CHENGYU_FINAL_DIRECTION", "bigger")  # bigger/smaller
-assert METRIC in ("cos", "std", "euc"), f"unknown metric {METRIC!r}"
+assert METRIC in ("cos", "euc"), f"unknown metric {METRIC!r}"
 assert DIRECTION in ("bigger", "smaller"), f"unknown direction {DIRECTION!r}"
-METRIC_LABEL = {"cos": "cosine", "std": "standardized cosine", "euc": "Euclidean"}
+METRIC_LABEL = {"cos": "cosine", "euc": "Euclidean"}
 
 K_DISTRACTORS = int(os.environ.get("CHENGYU_K", "20"))
 N_TEST_TEXTS = int(os.environ.get("CHENGYU_N_TEST", "999999"))  # test.in.csv
@@ -65,28 +64,19 @@ print(f"FROZEN configuration: metric={METRIC_LABEL[METRIC]}, layer={LAYER}, "
 
 dictionary, lengths = load_dictionary()
 idiom_list = sorted(dictionary)
-by_length = {}   # {length: sorted list of idioms} -- must match scripts 16/17
+by_length = {}   # {length: sorted list of idioms} -- must match script 17
 for i in idiom_list:
     by_length.setdefault(len(i), []).append(i)
-
-if METRIC == "std":
-    mu0, sigma0 = load_context_state_stats(0)
-    mu_l, sigma_l = load_context_state_stats(LAYER)
-    meta = np.load("data/context_state_stats_layer0.npz")
-    if str(meta["model"]) != MODEL:
-        raise RuntimeError(
-            f"data/context_state_stats_layer0.npz was fit with model "
-            f"{meta['model']!r}, but this run uses {MODEL!r} -- rerun "
-            f"scripts/16_fit_context_state_stats.py")
 
 df = pd.read_csv(TEST_FILE)
 
 # --- Step 1: build the frozen test set -- 1 target + K length-matched
 # distractors per text, same construction as script 17's validation set ----
-rng = random.Random(0)   # only used for distractor sampling,
-                        # not for choosing which texts to include (this
-                        # whole file is already untouched, so no shuffle
-                        # or skip is needed the way scripts 16/17 needed one)
+rng = random.Random(0)   # only used for distractor sampling, not for
+                        # choosing which texts to include -- this whole
+                        # file is already untouched, so (unlike script 17's
+                        # train.csv, which has long runs of the same target
+                        # idiom) no shuffle is needed here either
 to_evaluate = []   # (text_id, idiom, text, is_target)
 text_id = 0
 for src, dst in zip(df["src"], df["dst"]):
@@ -121,12 +111,7 @@ for start in range(0, len(to_evaluate), BATCH_SIZE):
     for k, (tid, idiom, _text, is_target) in enumerate(batch):
         e0 = states[k, 0]
         el = states[k, LAYER]
-        if METRIC == "cos":
-            delta = cosine_delta(e0, el)
-        elif METRIC == "std":
-            delta = standardized_delta(e0, el, mu0, sigma0, mu_l, sigma_l)
-        else:
-            delta = euclidean_delta(e0, el)
+        delta = cosine_delta(e0, el) if METRIC == "cos" else euclidean_delta(e0, el)
         batch_rows.append({"text_id": tid, "idiom": idiom, "is_target": is_target,
                             "delta": delta})
     rows.extend(batch_rows)
