@@ -122,8 +122,8 @@ def context_states_batch(pairs: list) -> np.ndarray:
     (e^(0)..e^(L), the idiom's own last-token state at every layer) instead
     of collapsing them to cosine -- needed to compute more than one distance
     metric from the same forward pass (representation study, section 6:
-    plain cosine, standardized cosine, Euclidean). Shape:
-    (n_pairs, n_layers+1, dim)."""
+    plain cosine and Euclidean; standardized cosine was tried and dropped --
+    see the removed calibration stage). Shape: (n_pairs, n_layers+1, dim)."""
     prompts = [f"这句话「{text}」，可以概括为成语「{idiom}" for idiom, text in pairs]
     return last_token_states_batch(prompts).cpu().numpy()
 
@@ -137,37 +137,7 @@ def cosine_delta(e0: np.ndarray, el: np.ndarray) -> float:
     return 1 - float(np.dot(e0, el)) / denom
 
 
-def standardized_delta(e0: np.ndarray, el: np.ndarray, mu0: np.ndarray,
-                        sigma0: np.ndarray, mu_l: np.ndarray, sigma_l: np.ndarray) -> float:
-    """Delta_l^std(i,t) = 1 - cos(z0, zl), z = (e - mu) / sigma -- each side
-    standardized with ITS OWN layer's calibration stats
-    (load_context_state_stats) before comparing direction, so a handful of
-    oversized coordinates can't dominate the cosine (rogue-dimension effect,
-    Timkey & van Schijndel 2021)."""
-    z0 = (e0 - mu0) / sigma0
-    zl = (el - mu_l) / sigma_l
-    denom = max(float(np.linalg.norm(z0)) * float(np.linalg.norm(zl)), 1e-12)
-    return 1 - float(np.dot(z0, zl)) / denom
-
-
 def euclidean_delta(e0: np.ndarray, el: np.ndarray) -> float:
     """Delta_l^E(i,t) = ||e^(l) - e^(0)||_2 -- magnitude of the shift, unlike
-    the two cosine-based metrics above, which only look at direction."""
+    cosine_delta above, which only looks at direction."""
     return float(np.linalg.norm(el - e0))
-
-
-def load_context_state_stats(layer: int):
-    """Load precomputed per-coordinate mean/std of layer-`layer` states of
-    the idiom ITSELF, in context (scripts/16_fit_context_state_stats.py),
-    for standardized_delta. Deliberately not geometry.static_embedding_stats()
-    -- that describes a different population (an idiom's characters averaged
-    over the whole idiom) than e^(0)/e^(l) here (the idiom's own last-token
-    state, extracted from the same forward pass as every other layer)."""
-    path = f"data/context_state_stats_layer{layer}.npz"
-    if not os.path.exists(path):
-        raise FileNotFoundError(
-            f"{path} not found. Run scripts/16_fit_context_state_stats.py "
-            f"first (fits every layer in one pass)."
-        )
-    data = np.load(path)
-    return data["mu"], data["sigma"] + 1e-8

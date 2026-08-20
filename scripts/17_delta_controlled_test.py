@@ -4,33 +4,36 @@ distractors, tested directly (pairwise success rate, Top-1 accuracy) instead
 of only through a fitted classifier (script 09's AUC)?
 
 For each held-out VALIDATION text: 1 target idiom + K distractors (the SAME
-candidate set for every metric, so the three metrics are compared fairly).
-Distractors are length-matched to the target (sample_length_matched_distractors,
-must sample identically to script 16) -- the dictionary is 95.4% length-4
-idioms, so a uniform sample would almost always make a non-length-4 target
-(2.4% of this corpus's texts) the odd one out by character count alone, a
-shortcut unrelated to whether it actually fits the text.
-Three distance metrics per candidate per layer:
-  A. cosine        Delta_l^cos = 1 - cos(e^(0), e^(l))
-  B. standardized cosine  (standardize coordinates first, then cosine)
-  C. Euclidean      Delta_l^E  = ||e^(l) - e^(0)||_2
-(representation.cosine_delta / standardized_delta / euclidean_delta, all
-computed from ONE forward pass per candidate via context_states_batch --
-metric B needs scripts/16_fit_context_state_stats.py to have been run first.)
+candidate set for every metric, so the metrics are compared fairly).
+Distractors are length-matched to the target (sample_length_matched_distractors)
+-- the dictionary is 95.4% length-4 idioms, so a uniform sample would almost
+always make a non-length-4 target (2.4% of this corpus's texts) the odd one
+out by character count alone, a shortcut unrelated to whether it actually
+fits the text.
+
+Two distance metrics per candidate per layer:
+  A. cosine     Delta_l^cos = 1 - cos(e^(0), e^(l))
+  C. Euclidean  Delta_l^E  = ||e^(l) - e^(0)||_2
+(representation.cosine_delta / euclidean_delta, both computed from ONE
+forward pass per candidate via context_states_batch.)
+
+A third metric, standardized cosine (standardize coordinates first, using a
+calibration set, then cosine), was tried and dropped: on real runs it was
+consistently the weakest of the three at its own best layer, so the
+calibration stage it needed (former script 16) was retired along with it --
+see the representation-study design note in the chapter for the numbers.
 
 Direction of the signal is not assumed: W_l = P(Delta_l(target) >
 Delta_l(distractor)) is computed directly. W_l > 50% means larger Delta_l
 tends to mean a better fit; W_l < 50% means smaller does. This is picked and
 reported on the SAME held-out validation set -- deliberately so: this script
 is an exploratory pass (does a directional signal exist at all, and where),
-not a confirmatory claim about one selected layer/metric, so it does not
-need the further validation/test split script 09 uses for that latter
-purpose (see the representation-study design note in the chapter).
+not a confirmatory claim about one selected layer/metric. A confirmatory
+check on a genuinely untouched set (an official held-out split, not a
+further slice of train.csv) lives in script 18.
 
-VALIDATION texts are a suffix of the same SEED-shuffled train.csv order used
-by script 16: this script skips the first CHENGYU_N_CALIBRATION texts (must
-match script 16's setting) before sampling its own texts, so the two sets
-never share a text."""
+VALIDATION texts are the first N_VAL_TEXTS valid texts of the SEED-shuffled,
+deduplicated train.csv order -- no calibration set to skip past anymore."""
 import os
 import random
 
@@ -41,70 +44,57 @@ import pandas as pd
 from chengyu.evaluation import (
     find_idiom, load_dictionary, normalize, sample_length_matched_distractors,
 )
-from chengyu.representation import (
-    context_states_batch, cosine_delta, euclidean_delta,
-    load_context_state_stats, standardized_delta,
-)
-from chengyu.scoring import MODEL
+from chengyu.representation import context_states_batch, cosine_delta, euclidean_delta
 
 FIGURE_PAIRWISE = "results/figures/17_pairwise_rate_par_couche.png"
 FIGURE_TOP1 = "results/figures/17_top1_rate_par_couche.png"
-DATA_OUT = "results/outputs/17_deltas.csv"   # raw deltas per candidate, all
-                        # 3 metrics x every layer -- saved before analysis so
+DATA_OUT = "results/outputs/17_deltas.csv"   # raw deltas per candidate, both
+                        # metrics x every layer -- saved before analysis so
                         # a re-run of the analysis alone never needs new
                         # (expensive) forward passes, same reasoning as
                         # script 09.
 os.makedirs(os.path.dirname(FIGURE_PAIRWISE), exist_ok=True)
 os.makedirs(os.path.dirname(DATA_OUT), exist_ok=True)
 
-SEED = 0                # must match scripts/16_fit_context_state_stats.py
-N_CALIBRATION_SKIP = int(os.environ.get("CHENGYU_N_CALIBRATION", "300"))
-                        # must match script 16's CHENGYU_N_CALIBRATION, or
-                        # the two texts sets can overlap
+SEED = 0
 N_VAL_TEXTS = int(os.environ.get("CHENGYU_N_VAL", "500"))
                         # deliberately a safe, finite default -- this stage
                         # is an exploratory pass (see module docstring), not
                         # the "run on everything" full-dataset study. To
-                        # process every remaining valid text, pass an
-                        # explicit large number (e.g. CHENGYU_N_VAL=200000):
-                        # the loop below simply runs out of rows and stops,
-                        # no special "unlimited" mode needed.
+                        # process every valid text, pass an explicit large
+                        # number (e.g. CHENGYU_N_VAL=200000): the loop below
+                        # simply runs out of rows and stops, no special
+                        # "unlimited" mode needed.
 K_DISTRACTORS = int(os.environ.get("CHENGYU_K", "20"))
 BATCH_SIZE = int(os.environ.get("CHENGYU_BATCH", "32"))
 
-METRICS = ["cos", "std", "euc"]
-METRIC_LABEL = {"cos": "cosine", "std": "standardized cosine", "euc": "Euclidean"}
-METRIC_COLOR = {"cos": "#1f5c8a", "std": "#2f7d55", "euc": "#c0783c"}
+METRICS = ["cos", "euc"]
+METRIC_LABEL = {"cos": "cosine", "euc": "Euclidean"}
+METRIC_COLOR = {"cos": "#1f5c8a", "euc": "#c0783c"}
 
 rng = random.Random(SEED)
 dictionary, lengths = load_dictionary()
 idiom_list = sorted(dictionary)
 by_length = {}   # {length: sorted list of idioms} -- for length-matched
-                  # distractor sampling (must match script 16's grouping)
+                  # distractor sampling
 for i in idiom_list:
     by_length.setdefault(len(i), []).append(i)
 df = pd.read_csv("data/raw/cip/train.csv")
 df = (
     df[~df["dst"].map(normalize).duplicated()]   # dedupe by NORMALIZED text
-                        # before splitting -- must match script 16's dedupe
-                        # exactly, or the two texts sets can drift apart
     .sample(frac=1, random_state=SEED)
     .reset_index(drop=True)
 )
 
-# --- Step 1: skip the calibration texts, then take N_VAL_TEXTS validation
-# texts, 1 target + K distractors each ------------------------------------
+# --- Step 1: take the first N_VAL_TEXTS valid texts, 1 target + K
+# distractors each ---------------------------------------------------------
 to_evaluate = []   # (text_id, idiom, text, is_target)
-skip_found = 0
 text_id = 0
 for src, dst in zip(df["src"], df["dst"]):
     if text_id >= N_VAL_TEXTS:
         break
     target = find_idiom(src, dst, dictionary, lengths)
     if target is None:
-        continue
-    if skip_found < N_CALIBRATION_SKIP:
-        skip_found += 1
         continue
     text = normalize(dst)
     distractors = sample_length_matched_distractors(target, by_length, K_DISTRACTORS, rng)
@@ -114,13 +104,9 @@ for src, dst in zip(df["src"], df["dst"]):
 
 n_texts = text_id
 print(f"validation set: {n_texts} texts x (1 target + {K_DISTRACTORS} distractors) "
-      f"= {len(to_evaluate)} (idiom, text) pairs "
-      f"(skipped {skip_found} calibration texts)")
+      f"= {len(to_evaluate)} (idiom, text) pairs")
 
-calib_stats = {}   # metric B's per-layer (mu, sigma), loaded lazily below
-                    # once n_layers is known from the first batch (Step 2)
-
-# --- Step 2: batch through the model, compute all 3 metrics x every layer,
+# --- Step 2: batch through the model, compute both metrics x every layer,
 # saved incrementally -------------------------------------------------------
 if os.path.exists(DATA_OUT):
     os.remove(DATA_OUT)
@@ -134,41 +120,20 @@ for start in range(0, len(to_evaluate), BATCH_SIZE):
     states = context_states_batch(pairs)   # (batch, n_layers, dim)
     if n_layers is None:
         n_layers = states.shape[1]
-        calib_stats = {l: load_context_state_stats(l) for l in range(n_layers)}
-
-        # sanity-check the calibration file's metadata (script 16) against
-        # this run's own config, so a stale/mismatched file fails loudly
-        # instead of silently standardizing with the wrong population
-        meta = np.load("data/context_state_stats_layer0.npz")
-        if str(meta["model"]) != MODEL:
-            raise RuntimeError(
-                f"data/context_state_stats_layer0.npz was fit with model "
-                f"{meta['model']!r}, but this run uses {MODEL!r} -- rerun "
-                f"scripts/16_fit_context_state_stats.py")
-        if int(meta["seed"]) != SEED or int(meta["k_distractors"]) != K_DISTRACTORS:
-            print(f"WARNING: calibration stats were fit with seed={int(meta['seed'])}, "
-                  f"k_distractors={int(meta['k_distractors'])}, but this run uses "
-                  f"SEED={SEED}, K_DISTRACTORS={K_DISTRACTORS} -- still valid, "
-                  f"just not exactly the config scripts/16 was last run with")
 
     batch_rows = []
     for k, (tid, idiom, _text, is_target) in enumerate(batch):
         e0 = states[k, 0]
-        mu0, sigma0 = calib_stats[0]
         row = {"text_id": tid, "idiom": idiom, "is_target": is_target}
         for l in range(n_layers):
             if l == 0:
                 # l=0 is the baseline compared to itself -- exactly 0 by
-                # definition for cosine and standardized cosine, forced
-                # rather than computed to avoid float round-off residue
-                # (same reasoning as representation.modification_by_layer).
+                # definition for cosine, forced rather than computed to
+                # avoid float round-off residue (same reasoning as
+                # representation.modification_by_layer).
                 row[f"cos_{l}"] = 0.0
-                row[f"std_{l}"] = 0.0
             else:
-                el = states[k, l]
-                mu_l, sigma_l = calib_stats[l]
-                row[f"cos_{l}"] = cosine_delta(e0, el)
-                row[f"std_{l}"] = standardized_delta(e0, el, mu0, sigma0, mu_l, sigma_l)
+                row[f"cos_{l}"] = cosine_delta(e0, states[k, l])
             row[f"euc_{l}"] = euclidean_delta(e0, states[k, l])
         batch_rows.append(row)
 
@@ -297,6 +262,5 @@ Summary: this is an EXPLORATORY pass (which layers/metrics carry a
 directional signal, and which direction) on a single held-out validation
 set. If a specific layer+metric combination is going to be reported as a
 result (not just used to build intuition), re-confirm that one number on a
-further held-out test set never touched here -- the same reasoning script 09
-already applies to its own layer selection.
+further held-out test set never touched here -- see script 18.
 """)
