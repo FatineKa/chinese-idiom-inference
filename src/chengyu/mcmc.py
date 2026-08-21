@@ -11,7 +11,9 @@ import numpy as np
 
 from chengyu.geometry import static_embedding_stats
 from chengyu.prior import log_prior
-from chengyu.representation import load_text_state_stats, text_state_by_layer
+from chengyu.representation import (
+    context_states_batch, euclidean_delta, load_text_state_stats, text_state_by_layer,
+)
 from chengyu.scoring import score_summary
 
 
@@ -252,6 +254,53 @@ def text_proposer(idioms: list, text: str, static_embeddings: np.ndarray,
           f"standardize={standardize}, {len(idioms)} idioms, "
           f"weight min={weights.min():.2e} "
           f"max={weights.max():.2e} (most favored idiom: {idioms[weights.argmax()]})")
+
+    def propose(current, rng):
+        idx = rng.choices(range(len(idioms)), weights=weights.tolist())[0]
+        candidate = idioms[idx]
+        log_hastings = math.log(weights[index[current]]) - math.log(weights[idx])
+        return candidate, log_hastings
+    return propose
+
+
+def raw_delta_scores(idioms: list, text: str, layer: int = 23, batch_size: int = 32) -> dict:
+    """Delta_layer^E(i,t) (representation.euclidean_delta) for EVERY idiom in
+    `idioms` against one fixed text -- the expensive, one-time-per-text pass
+    delta_proposer_from_scores' weights are built from (chapter section
+    sec:delta_proposal). Batched through context_states_batch, the same
+    machinery scripts 17/18 use. Independent of beta: computed once per
+    text, then reused for every beta in a sweep, since Delta_l^E(i,t) itself
+    does not depend on beta -- only the softmax weighting built from it
+    does."""
+    scores = {}
+    for start in range(0, len(idioms), batch_size):
+        batch = idioms[start:start + batch_size]
+        pairs = [(idiom, text) for idiom in batch]
+        states = context_states_batch(pairs)   # (batch, n_layers, dim)
+        for k, idiom in enumerate(batch):
+            scores[idiom] = euclidean_delta(states[k, 0], states[k, layer])
+    return scores
+
+
+def delta_proposer_from_scores(idioms: list, delta_scores: dict, beta: float):
+    """Independence sampler q_beta(i|t) = softmax(-beta * Delta_l^E(i,t))
+    (chapter section sec:delta_proposal), built from ALREADY-COMPUTED scores
+    (raw_delta_scores) -- no new model calls here, so sweeping several beta
+    values for the same text only pays the dictionary-wide pass once.
+    beta=0 recovers uniform_proposer exactly (every weight equal), as a
+    mathematical consequence of the softmax at beta=0, not a special case
+    handled separately.
+
+    Same shape as text_proposer: an independence sampler, so log_hastings is
+    the log ratio of the (state-independent) proposal weights, not of a
+    state-conditional distribution."""
+    raw = np.array([delta_scores[i] for i in idioms])
+    # subtract the min before exponentiating -- numerical stability only,
+    # cancels exactly in the softmax (same log-sum-exp reasoning used
+    # elsewhere in this project), does not change q_beta itself
+    weights = np.exp(-beta * (raw - raw.min()))
+    weights /= weights.sum()
+    index = {idiom: k for k, idiom in enumerate(idioms)}
 
     def propose(current, rng):
         idx = rng.choices(range(len(idioms)), weights=weights.tolist())[0]
