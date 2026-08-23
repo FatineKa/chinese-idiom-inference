@@ -3,6 +3,7 @@
    and, via representation.py, on PyTorch — but only one Qwen forward pass
    at construction time, independent of the number of idioms."""
 
+import itertools
 import math
 import random
 import time
@@ -249,6 +250,11 @@ def text_proposer(idioms: list, text: str, static_embeddings: np.ndarray,
     weights = np.exp((static_embeddings @ v / norms) / temperature)
     weights /= weights.sum()
     index = {idiom: k for k, idiom in enumerate(idioms)}
+    weights_list = weights.tolist()
+    # cum_weights precomputed ONCE, not per step -- see delta_proposer_from_scores
+    # for why: random.Random.choices rebuilds the whole cumulative-weight
+    # table from scratch every call when given weights= instead.
+    cum_weights = list(itertools.accumulate(weights_list))
 
     print(f"informed proposer built: layer {layer}, T={temperature}, "
           f"standardize={standardize}, {len(idioms)} idioms, "
@@ -256,9 +262,9 @@ def text_proposer(idioms: list, text: str, static_embeddings: np.ndarray,
           f"max={weights.max():.2e} (most favored idiom: {idioms[weights.argmax()]})")
 
     def propose(current, rng):
-        idx = rng.choices(range(len(idioms)), weights=weights.tolist())[0]
+        idx = rng.choices(range(len(idioms)), cum_weights=cum_weights)[0]
         candidate = idioms[idx]
-        log_hastings = math.log(weights[index[current]]) - math.log(weights[idx])
+        log_hastings = math.log(weights_list[index[current]]) - math.log(weights_list[idx])
         return candidate, log_hastings
     return propose
 
@@ -301,10 +307,18 @@ def delta_proposer_from_scores(idioms: list, delta_scores: dict, beta: float):
     weights = np.exp(-beta * (raw - raw.min()))
     weights /= weights.sum()
     index = {idiom: k for k, idiom in enumerate(idioms)}
+    weights_list = weights.tolist()
+    # cum_weights precomputed ONCE here, not per step: random.Random.choices
+    # rebuilds the entire cumulative-weight table from scratch every call
+    # when given weights= (confirmed by direct timing: ~0.5ms/call at
+    # |idioms|=31,113, vs ~0.001ms/call passing cum_weights= instead) --
+    # a real, model-independent bottleneck once N_STEPS is scaled up, since
+    # this same distribution is sampled from unchanged at every step.
+    cum_weights = list(itertools.accumulate(weights_list))
 
     def propose(current, rng):
-        idx = rng.choices(range(len(idioms)), weights=weights.tolist())[0]
+        idx = rng.choices(range(len(idioms)), cum_weights=cum_weights)[0]
         candidate = idioms[idx]
-        log_hastings = math.log(weights[index[current]]) - math.log(weights[idx])
+        log_hastings = math.log(weights_list[index[current]]) - math.log(weights_list[idx])
         return candidate, log_hastings
     return propose
