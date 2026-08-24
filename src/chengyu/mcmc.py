@@ -311,7 +311,7 @@ def delta_proposer_from_scores(idioms: list, delta_scores: dict, beta: float):
     # cum_weights precomputed ONCE here, not per step: random.Random.choices
     # rebuilds the entire cumulative-weight table from scratch every call
     # when given weights= (confirmed by direct timing: ~0.5ms/call at
-    # |idioms|=31,113, vs ~0.001ms/call passing cum_weights= instead) --
+    # |idioms|=31,114, vs ~0.001ms/call passing cum_weights= instead) --
     # a real, model-independent bottleneck once N_STEPS is scaled up, since
     # this same distribution is sampled from unchanged at every step.
     cum_weights = list(itertools.accumulate(weights_list))

@@ -28,10 +28,10 @@ Peres). Reported as such; several seeds are averaged (CHENGYU_N_SEEDS) to
 reduce the noise of relying on one trajectory, cheap to do since every step
 is a lookup once the two O(|I|) precomputations are done.
 
-Cost per text: |I|=31,113 candidate-level likelihood evaluations
+Cost per text: |I|=31,114 candidate-level likelihood evaluations
 (text_scores, for the exact posterior AND reused as the MCMC target via a
-precomputed cache) + |I|=31,113 candidate-level representation evaluations
-(raw_delta_scores, for Delta_23^E) -- batched, so not 31,113 separate
+precomputed cache) + |I|=31,114 candidate-level representation evaluations
+(raw_delta_scores, for Delta_23^E) -- batched, so not 31,114 separate
 network invocations, but still O(|I|) work either way. Expensive; start
 with 1-3 texts, not 50."""
 import os
@@ -53,12 +53,6 @@ N_STEPS = int(os.environ.get("CHENGYU_N_STEPS", "3000"))
 N_CHECKPOINTS = int(os.environ.get("CHENGYU_N_CHECKPOINTS", "15"))
 N_TEXTS = int(os.environ.get("CHENGYU_N_TEXTS", "1"))
 N_SEEDS = int(os.environ.get("CHENGYU_N_SEEDS", "5"))
-BURN_IN = int(os.environ.get("CHENGYU_BURN_IN", str(N_STEPS // 10)))   # FIXED
-                        # across checkpoints, not 10% of each checkpoint's
-                        # own length -- otherwise a sample counted at one
-                        # checkpoint could be discarded as burn-in at
-                        # another, and the "kept" window wouldn't simply
-                        # grow as more steps are taken
 SEED = 0
 
 dictionary, lengths = load_dictionary()
@@ -74,17 +68,18 @@ df = (
 checkpoints = sorted(set(
     int(round(N_STEPS * frac)) for frac in np.linspace(1 / N_CHECKPOINTS, 1.0, N_CHECKPOINTS)
 ))
-checkpoints = [c for c in checkpoints if c > BURN_IN]
 
 
-def tvd_at_checkpoints(trace, exact, checkpoints, burn_in):
-    """TVD at each checkpoint, from a FIXED burn-in: the window
-    trace[burn_in:c] only grows as c grows, unlike a burn-in taken relative
-    to each checkpoint's own length."""
+def tvd_at_checkpoints(trace, exact, checkpoints):
+    """TVD at each checkpoint, counting from step 1 -- no burn-in discarded.
+    The claim being tested is "does the informed proposal get close to the
+    truth in fewer steps, starting cold", and the early steps (climbing out
+    of a bad, randomly-chosen starting idiom) ARE that claim, not noise to
+    exclude before measuring it."""
     from collections import Counter
     out = []
     for c in checkpoints:
-        samples = trace[burn_in:c]
+        samples = trace[:c]
         counts = Counter(samples)
         tvd = 0.5 * sum(abs(exact.get(k, 0.0) - counts.get(k, 0) / len(samples))
                          for k in set(exact) | set(counts))
@@ -119,16 +114,28 @@ for src, dst in zip(df["src"], df["dst"]):
     delta_scores = raw_delta_scores(idioms, text, layer=LAYER)
 
     raw_deltas = np.array(list(delta_scores.values()))
-    mu_delta, sigma_delta = raw_deltas.mean(), max(raw_deltas.std(), 1e-8)
     print(f"Delta_{LAYER}^E distribution: min={raw_deltas.min():.4f} "
           f"p10={np.quantile(raw_deltas, 0.1):.4f} median={np.median(raw_deltas):.4f} "
           f"p90={np.quantile(raw_deltas, 0.9):.4f} max={raw_deltas.max():.4f} "
           f"std={raw_deltas.std():.4f}")
-    # standardized so beta is comparable across texts/layers -- an affine
-    # rescaling of the SAME score, so it does not change which candidate
-    # gets the most weight at a given relative strength, only makes beta's
-    # scale interpretable (unlike raw Delta, whose scale varies by text)
-    standardized_scores = {i: (d - mu_delta) / sigma_delta for i, d in delta_scores.items()}
+    # standardized WITHIN each idiom length class, not globally: the
+    # representation study that validated Delta_23^E only ever compared
+    # idioms of the SAME length (length-matched distractors), and the
+    # dictionary is 95.4% length-4 idioms -- a single global mean/std would
+    # be almost entirely the length-4 population's statistics, silently
+    # applied to every other length too. This keeps beta comparable across
+    # texts (still an affine rescaling, so ranking within a length class is
+    # unchanged) without importing a length-based bias the validation never
+    # tested for.
+    by_length = {}
+    for i in idioms:
+        by_length.setdefault(len(i), []).append(i)
+    standardized_scores = {}
+    for n, group in by_length.items():
+        vals = np.array([delta_scores[i] for i in group])
+        mu_n, sigma_n = vals.mean(), max(vals.std(), 1e-8)
+        for i in group:
+            standardized_scores[i] = (delta_scores[i] - mu_n) / sigma_n
 
     # one shared starting state, drawn independently of the target -- NOT
     # the known-correct idiom, so early-step behavior isn't inflated by
@@ -151,7 +158,7 @@ for src, dst in zip(df["src"], df["dst"]):
                         # only ever read from here (every key already
                         # present), but copying avoids any risk of one run's
                         # writes leaking into another's
-            seed_curves.append(tvd_at_checkpoints(trace, exact, checkpoints, BURN_IN))
+            seed_curves.append(tvd_at_checkpoints(trace, exact, checkpoints))
         seed_curves = np.array(seed_curves)   # (N_SEEDS, len(checkpoints))
         mean_curve = seed_curves.mean(axis=0)
         curves[name] = (mean_curve, seed_curves.std(axis=0))

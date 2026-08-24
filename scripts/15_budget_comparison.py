@@ -17,7 +17,7 @@ proposer actually find the right answer more often."
 
 Optional, expensive secondary metric: TVD against the EXACT posterior over
 the full ~31k-idiom dictionary (CHENGYU_EXACT_TVD=1). More complete, but one
-exact posterior costs ~31,113 model calls (argmax.text_scores) -- N texts
+exact posterior costs ~31,114 model calls (argmax.text_scores) -- N texts
 therefore costs N times that, on top of the MCMC budgets themselves. Off by
 default; only worth turning on once the target-visit-rate result looks
 interesting enough to confirm more thoroughly.
