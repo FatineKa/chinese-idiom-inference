@@ -15,6 +15,9 @@ happen to record). Run on ALL texts, not only the mismatches, so the
 judge's reliability can also be checked on the texts where top-1 already
 matches the label (it should mostly say "yes" there -- if it doesn't,
 that is itself informative about how much to trust the judge)."""
+import os
+
+import matplotlib.pyplot as plt
 import pandas as pd
 
 from chengyu.argmax import text_scores
@@ -90,5 +93,46 @@ if len(mismatches):
           f"({len(mismatches)} texts)")
 
 adjusted_correct = matches.shape[0] + mismatches["judged_yes"].sum()
+adjusted_rate = adjusted_correct / evaluated
 print(f"\njudge-adjusted top-1 (labeled-correct OR judge says it fits "
-      f"anyway): {adjusted_correct / evaluated:.1%}")
+      f"anyway): {adjusted_rate:.1%}")
+
+# --- Figure: three bars -- likelihood-only accuracy, likelihood+prior
+# accuracy, and likelihood+prior accuracy SPLIT into labeled-correct
+# (solid) vs. judge-approved-alternative (hatched, stacked on top) -- shows
+# not just the adjusted number but how much of it is "extra credit" from
+# the judge, which the printed summary states separately but doesn't show
+# as one comparable picture. ---------------------------------------------
+rate_without = data["match_without"].mean()
+rate_with = data["match"].mean()
+bonus = adjusted_rate - rate_with   # judge-approved-alternative share only
+
+fig, ax = plt.subplots(figsize=(6, 4.5))
+bars_x = [0, 1, 2]
+labels = ["likelihood\nonly", "likelihood\n+ prior", "likelihood + prior\n(judge-adjusted)"]
+
+ax.bar(0, rate_without, width=0.6, color="#93a4b8")
+ax.bar(1, rate_with, width=0.6, color="#1f5c8a")
+ax.bar(2, rate_with, width=0.6, color="#1f5c8a", label="labeled-correct")
+ax.bar(2, bonus, width=0.6, bottom=rate_with, color="#2f7d55", hatch="//",
+       edgecolor="white", label="judge-approved alternative")
+
+for x, rate in [(0, rate_without), (1, rate_with)]:
+    ax.text(x, rate + 0.01, f"{rate:.1%}", ha="center", fontsize=10)
+ax.text(2, rate_with + bonus + 0.01, f"{adjusted_rate:.1%}", ha="center", fontsize=10)
+
+ax.set_xticks(bars_x)
+ax.set_xticklabels(labels)
+ax.set_ylabel("rate of finding/being judged as the correct idiom")
+ax.set_title(f"Top-1 accuracy by method, with and without judge credit -- n={evaluated} texts")
+ax.set_ylim(0, min(1.0, rate_with + bonus + 0.15))
+ax.spines["top"].set_visible(False)
+ax.spines["right"].set_visible(False)
+ax.grid(axis="y", color="#dbe6f0", linewidth=0.8)
+ax.set_axisbelow(True)
+ax.legend(frameon=False, loc="upper left")
+fig.tight_layout()
+figure = "results/figures/21_judge_comparison.png"
+os.makedirs(os.path.dirname(figure), exist_ok=True)
+fig.savefig(figure, dpi=150)
+print(f"figure saved: {figure}")
