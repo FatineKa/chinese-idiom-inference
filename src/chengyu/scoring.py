@@ -41,20 +41,49 @@ def log_prob_total(text: str) -> float:  # takes a text and returns its score
     return total  # returns the sum of log-probabilities: the text's score under Qwen
 
 @torch.no_grad()
-def score_summary(text, idiom):
-    """Score of: does this idiom summarize this text? One forward pass on
-    prompt+text, summing the log-probabilities of the text's own tokens
-    only -- equivalent to log p(prompt+text) - log p(prompt) via the chain
-    rule, but half as expensive. Same tokenization scheme as
-    argmax.text_scores, so the two stay numerically comparable."""
-    prompt_ids = _tok(f"成语「{idiom}」概括了这句话：").input_ids      # "The idiom X summarizes this sentence:"
+def text_scores(text: str, idioms: list, batch_size: int = 16, cache: dict | None = None) -> dict:
+    """log p(text | idiom) for each idiom, batched. Canonical implementation
+    of this quantity -- score_summary (below) is a thin single-idiom
+    wrapper around this, not a separate implementation, so the two can
+    never numerically drift apart.
+    One forward pass per prompt+text batch: sums the log-probabilities of
+    the text's own tokens only -- equivalent to log p(prompt+text) -
+    log p(prompt) via the chain rule, but half as expensive.
+    cache: optional {(text, idiom): score} dict, reused across calls so
+    each (text, idiom) pair is scored once."""
+    if cache is None:
+        cache = {}
+    to_score = [i for i in idioms if (text, i) not in cache]
     text_ids = _tok(text, add_special_tokens=False).input_ids
-    ids = torch.tensor([prompt_ids + text_ids], device=_device)
-    logp = torch.log_softmax(_model(ids).logits[0], dim=-1)
-    total = 0.0
-    for k in range(len(prompt_ids), len(prompt_ids) + len(text_ids)):  # text tokens only
-        total += logp[k - 1, ids[0, k]].item()
-    return total
+    pad = _tok.pad_token_id or _tok.eos_token_id
+    for start in range(0, len(to_score), batch_size):
+        batch = to_score[start:start + batch_size]
+        sequences, prompt_lengths = [], []
+        for idiom in batch:
+            prompt_ids = _tok(f"成语「{idiom}」概括了这句话：").input_ids
+            prompt_lengths.append(len(prompt_ids))
+            sequences.append(prompt_ids + text_ids)
+        # right padding: no effect on the positions that matter (causal model)
+        L = max(len(s) for s in sequences)
+        input_ids = torch.full((len(batch), L), pad, dtype=torch.long, device=_device)
+        mask = torch.zeros((len(batch), L), dtype=torch.long, device=_device)
+        for j, s in enumerate(sequences):
+            input_ids[j, :len(s)] = torch.tensor(s, device=_device)
+            mask[j, :len(s)] = 1
+        logp = torch.log_softmax(_model(input_ids, attention_mask=mask).logits, dim=-1)
+        for j, idiom in enumerate(batch):
+            total = 0.0
+            for k in range(prompt_lengths[j], len(sequences[j])):   # text tokens only
+                total += logp[j, k - 1, sequences[j][k]].item()
+            cache[(text, idiom)] = total
+    return {i: cache[(text, i)] for i in idioms}
+
+
+@torch.no_grad()
+def score_summary(text: str, idiom: str) -> float:
+    """log p(text | idiom) for one candidate -- a batch of size 1 through
+    text_scores, same prompt and same text-token mask."""
+    return text_scores(text, [idiom], batch_size=1)[idiom]
 
 
 @torch.no_grad()

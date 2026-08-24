@@ -3,6 +3,7 @@
    Target = idiom extracted by find_idiom.
    Compares accuracy with prior vs. without prior (likelihood only)."""
 
+import os
 import random
 
 import pandas as pd
@@ -11,7 +12,7 @@ from chengyu.argmax import text_scores
 from chengyu.evaluation import find_idiom, load_dictionary, normalize
 from chengyu.prior import log_prior
 
-N = 200                 # number of examples evaluated
+N = int(os.environ.get("CHENGYU_N", "200"))   # number of examples evaluated
 random.seed(0)
 
 dictionary, lengths = load_dictionary()

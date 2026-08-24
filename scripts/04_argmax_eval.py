@@ -12,12 +12,14 @@ Rows are shuffled before sampling: test.in.csv, like train.csv, is not
 guaranteed to be in random order, and script 10 already hit a bug
 where unshuffled file-order sampling repeated one target
 disproportionately."""
+import os
+
 import pandas as pd
 from chengyu.evaluation import load_dictionary, normalize, find_idiom
 from chengyu.argmax import exact_posterior, posterior_by_length, text_scores
 from chengyu.prior import log_prior
 
-N = 50    # full dictionary => expensive: start small
+N = int(os.environ.get("CHENGYU_N", "50"))   # full dictionary => expensive: start small
 dictionary, lengths = load_dictionary()
 idiom_list = sorted(dictionary)   # sorted, not list(): set order depends on
                         # per-process hash randomization (PYTHONHASHSEED)

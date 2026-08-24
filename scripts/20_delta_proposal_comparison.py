@@ -1,40 +1,23 @@
-"""20_delta_proposal_comparison.py -- does the representation-informed
-independence sampler q_beta (chapter sections sec:delta_proposal through
-sec:delta_proposal_experiment) produce a more accurate empirical
-approximation of the true posterior after fewer MCMC transitions than
-uniform, once the required quantities have been precomputed?
+"""20_delta_proposal_comparison.py -- does the Delta_23^E-informed
+independence proposal q_beta approximate the true posterior faster (in
+step count) than the uniform proposal, once both are pure lookups
+(Delta_23^E and h_t precomputed once per text, shared across the whole
+beta/seed sweep)?
 
-Uniform and every beta in the sweep run in the SAME script, on the SAME
-text, sharing the same exact posterior and the same Delta_23^E scores --
-same reasoning as script 15 comparing uniform and mixture together rather
-than as two separate runs.
+TVD tracks the running (from step 1, no burn-in) time-average occupation
+measure against the exact posterior -- an ergodic-average statistic
+(Levin & Peres), not marginal-law mixing-time convergence.
 
-Comparison axis is STEP COUNT, not total model calls (unlike script 15's
-budget-matched comparison): building q_beta already costs as much as
-computing the exact posterior directly (see sec:delta_why_help), so it
-cannot be framed as a cheaper alternative to enumeration. What CAN be
-tested fairly is posterior-approximation efficiency of the transition
-kernel itself -- once Delta_23^E(i,t) is known for every idiom (paid once
-per text, shared across the whole beta sweep) AND h_t(i) is known for
-every idiom too (also computed once, then passed into every MCMC run as a
-precomputed cache -- see USE_PRECOMPUTED_H below), every step is a pure
-lookup for every proposer alike, so comparing them at equal step count is
-the fair axis here, not equal cost.
+Aggregation order: average seeds within each text first, then average
+across texts -- so no text counts for more just because it ran more
+seeds. Every (text, beta, seed) result is saved to
+results/outputs/20_results.csv for reproducibility.
 
-The statistic plotted, d_TV(empirical occupation measure, exact posterior),
-is the time-average of one chain converging by the ergodic theorem -- NOT
-the marginal law of X_m converging in the usual mixing-time sense (Levin &
-Peres). Reported as such; several seeds are averaged (CHENGYU_N_SEEDS) to
-reduce the noise of relying on one trajectory, cheap to do since every step
-is a lookup once the two O(|I|) precomputations are done.
-
-Cost per text: |I|=31,114 candidate-level likelihood evaluations
-(text_scores, for the exact posterior AND reused as the MCMC target via a
-precomputed cache) + |I|=31,114 candidate-level representation evaluations
-(raw_delta_scores, for Delta_23^E) -- batched, so not 31,114 separate
-network invocations, but still O(|I|) work either way. Expensive; start
-with 1-3 texts, not 50."""
+Cost per text: O(|I|) likelihood calls (exact posterior + MCMC target,
+shared via one cache) + O(|I|) representation calls (Delta_23^E) --
+batched, but still expensive; start with 1-3 texts."""
 import os
+from collections import Counter
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -71,21 +54,28 @@ checkpoints = sorted(set(
 
 
 def tvd_at_checkpoints(trace, exact, checkpoints):
-    """TVD at each checkpoint, counting from step 1 -- no burn-in discarded.
-    The claim being tested is "does the informed proposal get close to the
-    truth in fewer steps, starting cold", and the early steps (climbing out
-    of a bad, randomly-chosen starting idiom) ARE that claim, not noise to
-    exclude before measuring it."""
-    from collections import Counter
+    """TVD at each checkpoint, counted from step 1 -- convergence speed
+    from a cold start is the claim under test, not noise to burn away."""
     out = []
     for c in checkpoints:
-        samples = trace[:c]
-        counts = Counter(samples)
-        tvd = 0.5 * sum(abs(exact.get(k, 0.0) - counts.get(k, 0) / len(samples))
-                         for k in set(exact) | set(counts))
-        out.append(tvd)
+        counts = Counter(trace[:c])
+        out.append(0.5 * sum(abs(exact.get(k, 0.0) - counts.get(k, 0) / c)
+                              for k in set(exact) | set(counts)))
     return out
 
+
+def tie_aware_match(trace, key):
+    """Fractional credit if `key` is among the trace's (possibly tied)
+    most-visited idioms -- Counter.most_common(1) alone breaks ties
+    arbitrarily by encounter order."""
+    counts = Counter(trace)
+    best = max(counts.values())
+    winners = [k for k, v in counts.items() if v == best]
+    return (1.0 / len(winners)) if key in winners else 0.0
+
+
+run_rows = []                                  # one row per (text, beta, seed)
+per_text_curves = {beta: [] for beta in BETAS}  # beta -> [mean-over-seeds curve, per text]
 
 text_id = 0
 for src, dst in zip(df["src"], df["dst"]):
@@ -98,38 +88,23 @@ for src, dst in zip(df["src"], df["dst"]):
     text_id += 1
     print(f"\n=== text {text_id}/{N_TEXTS} -- target: {target} ===")
 
-    print("computing exact posterior over the full dictionary...")
     raw_h = text_scores(text, idioms)
     h = {i: raw_h[i] + log_prior(i) for i in idioms}
     exact = exact_posterior(h)
-    rank = sorted(h, key=h.get, reverse=True).index(target) + 1
-    print(f"target posterior probability: {exact[target]:.4f}  (rank {rank}/{len(idioms)})")
+    ranked = sorted(h, key=h.get, reverse=True)
+    target_rank = ranked.index(target) + 1
+    map_idiom = ranked[0]
+    print(f"target posterior probability: {exact[target]:.4f}  (rank {target_rank}/{len(idioms)})  "
+          f"MAP idiom: {map_idiom} (p={exact[map_idiom]:.4f})")
 
-    # USE_PRECOMPUTED_H: pre-populate metropolis_hastings' cache with every
-    # idiom's h_t so every MCMC step is a lookup, not a fresh model call --
-    # without this, "steps are free once setup is paid" is false in practice.
-    h_cache = {(text, i): h[i] for i in idioms}
+    h_cache = {(text, i): h[i] for i in idioms}   # every MCMC step becomes a lookup
 
-    print(f"computing Delta_{LAYER}^E for every idiom (shared across the beta sweep)...")
     delta_scores = raw_delta_scores(idioms, text, layer=LAYER)
-
-    raw_deltas = np.array(list(delta_scores.values()))
-    print(f"Delta_{LAYER}^E distribution: min={raw_deltas.min():.4f} "
-          f"p10={np.quantile(raw_deltas, 0.1):.4f} median={np.median(raw_deltas):.4f} "
-          f"p90={np.quantile(raw_deltas, 0.9):.4f} max={raw_deltas.max():.4f} "
-          f"std={raw_deltas.std():.4f}")
-    # standardized WITHIN each idiom length class, not globally: the
-    # representation study that validated Delta_23^E only ever compared
-    # idioms of the SAME length (length-matched distractors), and the
-    # dictionary is 95.4% length-4 idioms -- a single global mean/std would
-    # be almost entirely the length-4 population's statistics, silently
-    # applied to every other length too. This keeps beta comparable across
-    # texts (still an affine rescaling, so ranking within a length class is
-    # unchanged) without importing a length-based bias the validation never
-    # tested for.
     by_length = {}
     for i in idioms:
         by_length.setdefault(len(i), []).append(i)
+    # standardized WITHIN each length class -- dictionary is 95.4% length-4,
+    # a global mean/std would just be that population's statistics
     standardized_scores = {}
     for n, group in by_length.items():
         vals = np.array([delta_scores[i] for i in group])
@@ -137,86 +112,83 @@ for src, dst in zip(df["src"], df["dst"]):
         for i in group:
             standardized_scores[i] = (delta_scores[i] - mu_n) / sigma_n
 
-    # one shared starting state, drawn independently of the target -- NOT
-    # the known-correct idiom, so early-step behavior isn't inflated by
-    # starting the chain already at the answer
-    x0_rng = np.random.default_rng(SEED)
-    x0 = idioms[x0_rng.integers(len(idioms))]
-    print(f"shared starting state (independent of target): {x0}")
+    # one starting idiom PER SEED, reused across every beta: pairs the
+    # beta comparison (same start for beta=0 and beta=5 at seed r) while
+    # still checking sensitivity to the starting point, across seeds
+    x0_rng = np.random.default_rng(SEED + text_id)
+    x0_by_seed = [idioms[k] for k in x0_rng.integers(len(idioms), size=N_SEEDS)]
 
-    curves = {}          # name -> (mean TVD curve, std TVD curve)
-    visit_rates = {}     # name -> (mean target-visit rate, std) -- how much
-                          # of its time the chain spends on the real answer
-    top1_rates = {}       # name -> fraction of seeds whose MOST-VISITED
-                          # idiom (the chain's single "final answer",
-                          # analogous to the ranking system's top-1) matches
-                          # the target -- NOT the last state (see below)
     for beta in BETAS:
         name = "uniform" if beta == 0 else f"beta={beta}"
-        seed_curves = []
-        seed_visit_rates = []
-        seed_top1_matches = []
+        proposer = (uniform_proposer(idioms) if beta == 0
+                    else delta_proposer_from_scores(idioms, standardized_scores, beta))
+        seed_curves, seed_visit, seed_mode_t, seed_mode_m = [], [], [], []
         for r in range(N_SEEDS):
-            proposer = (uniform_proposer(idioms) if beta == 0
-                        else delta_proposer_from_scores(idioms, standardized_scores, beta))
-            run_seed = SEED + r
-            trace, accepted = metropolis_hastings(text, x0, proposer, N_STEPS,
-                                                    seed=run_seed, cache=dict(h_cache))
-                        # dict(h_cache): a fresh copy per run -- the cache is
-                        # only ever read from here (every key already
-                        # present), but copying avoids any risk of one run's
-                        # writes leaking into another's
-            seed_curves.append(tvd_at_checkpoints(trace, exact, checkpoints))
-            seed_visit_rates.append(trace.count(target) / len(trace))   # counted
-                        # from step 1, same as the TVD curve -- no burn-in
-                        # discarded, for the same reason
-            # "top-1" for one chain = its single MOST-VISITED idiom, not its
-            # LAST state: a well-mixed chain keeps wandering according to
-            # the whole distribution, it doesn't settle down and stay put,
-            # so the very last state is close to a one-sample coin flip
-            # (noisy, easy to get unlucky) -- the mode is the chain's
-            # actual "best single guess" if forced to name one.
-            from collections import Counter
-            mode_idiom, _ = Counter(trace).most_common(1)[0]
-            seed_top1_matches.append(mode_idiom == target)
-        seed_curves = np.array(seed_curves)   # (N_SEEDS, len(checkpoints))
-        mean_curve = seed_curves.mean(axis=0)
-        curves[name] = (mean_curve, seed_curves.std(axis=0))
-        seed_visit_rates = np.array(seed_visit_rates)
-        visit_rates[name] = (seed_visit_rates.mean(), seed_visit_rates.std())
-        top1_rates[name] = np.mean(seed_top1_matches)
-        acc_rate = sum(accepted) / len(accepted)   # last seed's, as a diagnostic only
-        print(f"  {name:>10}: final TVD={mean_curve[-1]:.4f} "
-              f"(+/- {seed_curves.std(axis=0)[-1]:.4f} across {N_SEEDS} seeds)  "
-              f"target-visit rate={seed_visit_rates.mean():.1%} "
-              f"(+/- {seed_visit_rates.std():.1%})  "
-              f"top-1 (mode) match={top1_rates[name]:.1%}  "
-              f"last-seed acceptance={acc_rate:.1%}")
+            trace, _ = metropolis_hastings(text, x0_by_seed[r], proposer, N_STEPS,
+                                            seed=SEED + r, cache=dict(h_cache))
+            curve = tvd_at_checkpoints(trace, exact, checkpoints)
+            visit = trace.count(target) / len(trace)
+            mode_t = tie_aware_match(trace, target)
+            mode_m = tie_aware_match(trace, map_idiom)
+            seed_curves.append(curve)
+            seed_visit.append(visit)
+            seed_mode_t.append(mode_t)
+            seed_mode_m.append(mode_m)
+            run_rows.append({"text_id": text_id, "target": target, "target_rank": target_rank,
+                              "map_idiom": map_idiom, "beta": beta, "seed": r,
+                              "final_tvd": curve[-1], "target_visit_rate": visit,
+                              "mode_target_match": mode_t, "mode_map_match": mode_m})
+        text_curve = np.mean(seed_curves, axis=0)
+        per_text_curves[beta].append(text_curve)
+        print(f"  {name:>10}: final TVD={text_curve[-1]:.4f}  "
+              f"visit_rate={np.mean(seed_visit):.1%}  "
+              f"mode-target={np.mean(seed_mode_t):.1%}  mode-MAP={np.mean(seed_mode_m):.1%}")
 
-    print(f"\nhow often each method's chain was actually sitting on the "
-          f"corpus reference idiom ({target}):")
-    for name, (mean_rate, std_rate) in visit_rates.items():
-        print(f"  {name:>10}: {mean_rate:.1%} (+/- {std_rate:.1%})")
+results = pd.DataFrame(run_rows)
+os.makedirs("results/outputs", exist_ok=True)
+results.to_csv("results/outputs/20_results.csv", index=False)
+print(f"\nsaved {len(results)} rows to results/outputs/20_results.csv")
 
-    print(f"\nhow often each method's single best guess (most-visited idiom) "
-          f"IS the corpus reference idiom ({target}), across {N_SEEDS} seeds:")
-    for name, rate in top1_rates.items():
-        print(f"  {name:>10}: {rate:.1%}")
+# cross-text aggregation: seeds already averaged into per_text_curves above;
+# here, average each beta's per-text values across texts
+print(f"\n=== aggregated over {text_id} text(s) ===")
+metrics = ["final_tvd", "target_visit_rate", "mode_target_match", "mode_map_match"]
+per_text_by_beta = {beta: results[results["beta"] == beta].groupby("text_id")[metrics].mean()
+                     for beta in BETAS}
+for beta in BETAS:
+    name = "uniform" if beta == 0 else f"beta={beta}"
+    agg = per_text_by_beta[beta].mean()
+    print(f"  {name:>10}: TVD={agg['final_tvd']:.4f}  visit_rate={agg['target_visit_rate']:.1%}  "
+          f"mode-target={agg['mode_target_match']:.1%}  mode-MAP={agg['mode_map_match']:.1%}")
 
-    fig, ax = plt.subplots(figsize=(7, 4.5))
-    for name, (mean_curve, std_curve) in curves.items():
-        ax.plot(checkpoints, mean_curve, marker="o", markersize=3, linewidth=2, label=name)
+# paired difference per text: TVD(beta) - TVD(uniform) -- % of texts where
+# the informed proposal actually beat uniform, not just the pooled average
+print("\npercentage of texts where informed TVD < uniform TVD:")
+uniform_tvd = per_text_by_beta[0]["final_tvd"]
+for beta in BETAS:
+    if beta == 0:
+        continue
+    diff = per_text_by_beta[beta]["final_tvd"] - uniform_tvd
+    print(f"  beta={beta}: {(diff < 0).mean():.1%}  (mean diff={diff.mean():+.4f}, n={len(diff)} texts)")
+
+fig, ax = plt.subplots(figsize=(7, 4.5))
+for beta in BETAS:
+    name = "uniform" if beta == 0 else f"beta={beta}"
+    curves = np.array(per_text_curves[beta])   # (n_texts, len(checkpoints))
+    mean_curve = curves.mean(axis=0)
+    ax.plot(checkpoints, mean_curve, marker="o", markersize=3, linewidth=2, label=name)
+    if len(curves) > 1:
+        std_curve = curves.std(axis=0)
         ax.fill_between(checkpoints, mean_curve - std_curve, mean_curve + std_curve, alpha=0.15)
-    ax.set_xlabel("MCMC step")
-    ax.set_ylabel(f"TVD to exact posterior (mean +/- std, {N_SEEDS} seeds)")
-    ax.set_title(f"Posterior-approximation efficiency: uniform vs. representation-informed -- "
-                 f"layer {LAYER}, text {text_id}")
-    ax.set_ylim(bottom=0.0)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.legend(frameon=False)
-    fig.tight_layout()
-    figure = f"results/figures/20_tvd_vs_steps_text{text_id}.png"
-    os.makedirs(os.path.dirname(figure), exist_ok=True)
-    fig.savefig(figure, dpi=150)
-    print(f"  figure saved: {figure}")
+ax.set_xlabel("MCMC step")
+ax.set_ylabel(f"TVD to exact posterior (mean over {text_id} text(s), {N_SEEDS} seeds each)")
+ax.set_title("Posterior-approximation efficiency: uniform vs. representation-informed")
+ax.set_ylim(bottom=0.0)
+ax.spines["top"].set_visible(False)
+ax.spines["right"].set_visible(False)
+ax.legend(frameon=False)
+fig.tight_layout()
+figure = "results/figures/20_tvd_vs_steps.png"
+os.makedirs(os.path.dirname(figure), exist_ok=True)
+fig.savefig(figure, dpi=150)
+print(f"figure saved: {figure}")
