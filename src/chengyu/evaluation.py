@@ -43,7 +43,7 @@ def sample_length_matched_distractors(target: str, by_length: dict, k: int, rng)
 def idioms_present(normalized_text: str, dictionary: set, lengths) -> set:
     """All dictionary idioms present in the (already normalized) text.
        Method: sliding window + O(1) set membership test.
-       Much faster than testing all 31,113 idioms one by one."""
+       Much faster than testing all 31,114 idioms one by one."""
     found = set()
     n = len(normalized_text)
     for L in lengths:

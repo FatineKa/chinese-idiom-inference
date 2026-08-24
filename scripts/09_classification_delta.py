@@ -13,7 +13,7 @@ nothing about an idiom never seen, or about a held-out test set.
 Formalized here as supervised binary classification:
   - OBSERVATION = one (candidate idiom, text) pair.
   - LABEL y=1 if the idiom is correct for this text, y=0 for a distractor
-    drawn at random among the 31,113 idioms.
+    drawn at random among the 31,114 idioms.
   - FEATURE per layer: Delta_l(i, t), l = 0 (raw embedding) to L (last
     layer, read from the model, never assumed in advance).
   - MODEL: logistic regression on Delta_l alone. Minimal by design: this

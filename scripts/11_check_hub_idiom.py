@@ -135,7 +135,7 @@ Reading this:
 # encode. Standardizing each coordinate (subtract its mean, divide by its
 # std) removes that -- computed separately for each side's own population,
 # since static embeddings and layer-11 text states are different
-# distributions: static side from the full 31,113-idiom dictionary (cheap,
+# distributions: static side from the full 31,114-idiom dictionary (cheap,
 # no forward pass), text-state side from the N_TEXTS sample already
 # collected in Part 1 -- no extra forward passes needed for this part.
 print(f"computing per-coordinate statistics for standardization "
