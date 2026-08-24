@@ -144,10 +144,14 @@ for src, dst in zip(df["src"], df["dst"]):
     x0 = idioms[x0_rng.integers(len(idioms))]
     print(f"shared starting state (independent of target): {x0}")
 
-    curves = {}   # name -> list of per-seed TVD curves
+    curves = {}          # name -> (mean TVD curve, std TVD curve)
+    visit_rates = {}     # name -> (mean target-visit rate, std), the DIRECT
+                          # "how often did this method actually land on the
+                          # real answer" number, alongside the TVD curve
     for beta in BETAS:
         name = "uniform" if beta == 0 else f"beta={beta}"
         seed_curves = []
+        seed_visit_rates = []
         for r in range(N_SEEDS):
             proposer = (uniform_proposer(idioms) if beta == 0
                         else delta_proposer_from_scores(idioms, standardized_scores, beta))
@@ -159,13 +163,25 @@ for src, dst in zip(df["src"], df["dst"]):
                         # present), but copying avoids any risk of one run's
                         # writes leaking into another's
             seed_curves.append(tvd_at_checkpoints(trace, exact, checkpoints))
+            seed_visit_rates.append(trace.count(target) / len(trace))   # counted
+                        # from step 1, same as the TVD curve -- no burn-in
+                        # discarded, for the same reason
         seed_curves = np.array(seed_curves)   # (N_SEEDS, len(checkpoints))
         mean_curve = seed_curves.mean(axis=0)
         curves[name] = (mean_curve, seed_curves.std(axis=0))
+        seed_visit_rates = np.array(seed_visit_rates)
+        visit_rates[name] = (seed_visit_rates.mean(), seed_visit_rates.std())
         acc_rate = sum(accepted) / len(accepted)   # last seed's, as a diagnostic only
         print(f"  {name:>10}: final TVD={mean_curve[-1]:.4f} "
               f"(+/- {seed_curves.std(axis=0)[-1]:.4f} across {N_SEEDS} seeds)  "
+              f"target-visit rate={seed_visit_rates.mean():.1%} "
+              f"(+/- {seed_visit_rates.std():.1%})  "
               f"last-seed acceptance={acc_rate:.1%}")
+
+    print(f"\nhow often each method's chain was actually sitting on the "
+          f"corpus reference idiom ({target}):")
+    for name, (mean_rate, std_rate) in visit_rates.items():
+        print(f"  {name:>10}: {mean_rate:.1%} (+/- {std_rate:.1%})")
 
     fig, ax = plt.subplots(figsize=(7, 4.5))
     for name, (mean_curve, std_curve) in curves.items():
