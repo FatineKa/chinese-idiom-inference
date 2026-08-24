@@ -18,6 +18,7 @@ that is itself informative about how much to trust the judge)."""
 import os
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 from chengyu.argmax import text_scores
@@ -136,3 +137,44 @@ figure = "results/figures/21_judge_comparison.png"
 os.makedirs(os.path.dirname(figure), exist_ok=True)
 fig.savefig(figure, dpi=150)
 print(f"figure saved: {figure}")
+
+# --- Figure 2: every text's actual judge margin (log p(yes) - log p(no)),
+# not just the final yes/no call -- shows HOW confident the judge was, and
+# whether "matches" and "mismatches" separate cleanly or overlap near the
+# y=0 decision boundary. Points shown individually (jittered sideways so
+# they don't overlap) rather than only a mean, since a mean alone would
+# hide exactly this kind of split. -----------------------------------------
+data["margin"] = data["log_p_yes"] - data["log_p_no"]
+rng = np.random.default_rng(0)
+
+fig2, ax2 = plt.subplots(figsize=(6.5, 4.5))
+group_x = {True: 0, False: 1}   # match -> x=0, mismatch -> x=1
+colors = {True: "#1f5c8a", False: "#c0783c"}
+for is_match, color in colors.items():
+    group = data[data["match"] == is_match]
+    if len(group) == 0:
+        continue
+    jitter = rng.uniform(-0.15, 0.15, size=len(group))
+    ax2.scatter(group_x[is_match] + jitter, group["margin"], s=22, alpha=0.7,
+                color=color, edgecolor="white", linewidth=0.4, zorder=3)
+    mean_margin = group["margin"].mean()
+    ax2.hlines(mean_margin, group_x[is_match] - 0.22, group_x[is_match] + 0.22,
+               color=color, linewidth=2.5, zorder=4)
+
+ax2.axhline(0.0, color="#93a4b8", linestyle="--", linewidth=1, zorder=1,
+            label="decision boundary (yes / no)")
+ax2.set_xticks([0, 1])
+ax2.set_xticklabels([f"top1 == target\n({len(matches)} texts)",
+                      f"top1 != target\n({len(mismatches)} texts)"])
+ax2.set_ylabel("judge margin: log p(yes) - log p(no)")
+ax2.set_title(f"Judge confidence per text, individually -- n={evaluated} texts "
+              f"(bar = group mean)")
+ax2.spines["top"].set_visible(False)
+ax2.spines["right"].set_visible(False)
+ax2.grid(axis="y", color="#dbe6f0", linewidth=0.8)
+ax2.set_axisbelow(True)
+ax2.legend(frameon=False, loc="best")
+fig2.tight_layout()
+figure2 = "results/figures/21_judge_margins.png"
+fig2.savefig(figure2, dpi=150)
+print(f"figure saved: {figure2}")
