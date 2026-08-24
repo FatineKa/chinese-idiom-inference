@@ -26,8 +26,8 @@ from chengyu.evaluation import find_idiom, load_dictionary, normalize
 from chengyu.prior import log_prior
 from chengyu.scoring import yes_no_judgment
 
-N = 50    # matches script 04's default -- full-dictionary ranking is
-          # expensive, start small
+N = int(os.environ.get("CHENGYU_N", "50"))   # matches script 04's default --
+          # full-dictionary ranking is expensive, start small
 dictionary, lengths = load_dictionary()
 idiom_list = sorted(dictionary)
 df = (

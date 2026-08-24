@@ -225,6 +225,36 @@ def uniform_proposer(idioms):
     return propose
 
 
+def _independence_sampler(idioms: list, log_weights: np.ndarray):
+    """Shared machinery for independence samplers built from a log-weight
+    per idiom: text_proposer and delta_proposer_from_scores both reduce to
+    this once their own weight formula is computed (only that formula
+    differs between them). Works in log-space so normalization stays safe
+    however concentrated the weights get (e.g. a large beta), via the same
+    log-sum-exp trick used in argmax.exact_posterior.
+
+    Returns propose(current, rng) -> (candidate, log_hastings), the SAME
+    contract every proposer in this file uses (uniform_proposer,
+    mixture_proposer): log_hastings = log q(current|t) - log q(candidate|t)."""
+    log_weights = np.asarray(log_weights, dtype=np.float64)
+    m = log_weights.max()
+    log_z = m + math.log(np.sum(np.exp(log_weights - m)))
+    log_probs = log_weights - log_z
+    weights_list = np.exp(log_probs).tolist()
+    index = {idiom: k for k, idiom in enumerate(idioms)}
+    # cum_weights precomputed ONCE, not per step: random.Random.choices
+    # rebuilds the whole cumulative-weight table from scratch every call
+    # when given weights= instead (~500x slower at |idioms|=31,114).
+    cum_weights = list(itertools.accumulate(weights_list))
+
+    def propose(current, rng):
+        idx = rng.choices(range(len(idioms)), cum_weights=cum_weights)[0]
+        candidate = idioms[idx]
+        log_hastings = log_probs[index[current]] - log_probs[idx]
+        return candidate, log_hastings
+    return propose
+
+
 def text_proposer(idioms: list, text: str, static_embeddings: np.ndarray,
                    layer: int, temperature: float = 1.0, standardize: bool = False):
     """Informed proposer, constant cost: a single Qwen forward pass (on the
@@ -247,26 +277,14 @@ def text_proposer(idioms: list, text: str, static_embeddings: np.ndarray,
         static_embeddings = (static_embeddings - mu_s) / sigma_s
         v = (v - mu_t) / sigma_t
     norms = np.maximum(np.linalg.norm(static_embeddings, axis=1) * np.linalg.norm(v), 1e-12)
-    weights = np.exp((static_embeddings @ v / norms) / temperature)
-    weights /= weights.sum()
-    index = {idiom: k for k, idiom in enumerate(idioms)}
-    weights_list = weights.tolist()
-    # cum_weights precomputed ONCE, not per step -- see delta_proposer_from_scores
-    # for why: random.Random.choices rebuilds the whole cumulative-weight
-    # table from scratch every call when given weights= instead.
-    cum_weights = list(itertools.accumulate(weights_list))
+    cosine_sim = static_embeddings @ v / norms
+    log_weights = cosine_sim / temperature
 
     print(f"informed proposer built: layer {layer}, T={temperature}, "
           f"standardize={standardize}, {len(idioms)} idioms, "
-          f"weight min={weights.min():.2e} "
-          f"max={weights.max():.2e} (most favored idiom: {idioms[weights.argmax()]})")
-
-    def propose(current, rng):
-        idx = rng.choices(range(len(idioms)), cum_weights=cum_weights)[0]
-        candidate = idioms[idx]
-        log_hastings = math.log(weights_list[index[current]]) - math.log(weights_list[idx])
-        return candidate, log_hastings
-    return propose
+          f"cosine sim min={cosine_sim.min():.3f} max={cosine_sim.max():.3f} "
+          f"(most favored idiom: {idioms[cosine_sim.argmax()]})")
+    return _independence_sampler(idioms, log_weights)
 
 
 def raw_delta_scores(idioms: list, text: str, layer: int = 23, batch_size: int = 32) -> dict:
@@ -293,32 +311,11 @@ def delta_proposer_from_scores(idioms: list, delta_scores: dict, beta: float):
     (chapter section sec:delta_proposal), built from ALREADY-COMPUTED scores
     (raw_delta_scores) -- no new model calls here, so sweeping several beta
     values for the same text only pays the dictionary-wide pass once.
-    beta=0 recovers uniform_proposer exactly (every weight equal), as a
-    mathematical consequence of the softmax at beta=0, not a special case
-    handled separately.
-
-    Same shape as text_proposer: an independence sampler, so log_hastings is
-    the log ratio of the (state-independent) proposal weights, not of a
-    state-conditional distribution."""
+    At beta=0 every idiom gets equal weight 1/|idioms|, INCLUDING the
+    current state -- a uniform independence proposal, not identical to
+    uniform_proposer (which excludes the current state by construction).
+    Both are valid MH proposals with the same stationary distribution, but
+    not the same proposal kernel."""
     raw = np.array([delta_scores[i] for i in idioms])
-    # subtract the min before exponentiating -- numerical stability only,
-    # cancels exactly in the softmax (same log-sum-exp reasoning used
-    # elsewhere in this project), does not change q_beta itself
-    weights = np.exp(-beta * (raw - raw.min()))
-    weights /= weights.sum()
-    index = {idiom: k for k, idiom in enumerate(idioms)}
-    weights_list = weights.tolist()
-    # cum_weights precomputed ONCE here, not per step: random.Random.choices
-    # rebuilds the entire cumulative-weight table from scratch every call
-    # when given weights= (confirmed by direct timing: ~0.5ms/call at
-    # |idioms|=31,114, vs ~0.001ms/call passing cum_weights= instead) --
-    # a real, model-independent bottleneck once N_STEPS is scaled up, since
-    # this same distribution is sampled from unchanged at every step.
-    cum_weights = list(itertools.accumulate(weights_list))
-
-    def propose(current, rng):
-        idx = rng.choices(range(len(idioms)), cum_weights=cum_weights)[0]
-        candidate = idioms[idx]
-        log_hastings = math.log(weights_list[index[current]]) - math.log(weights_list[idx])
-        return candidate, log_hastings
-    return propose
+    log_weights = -beta * raw
+    return _independence_sampler(idioms, log_weights)
