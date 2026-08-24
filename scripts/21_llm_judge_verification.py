@@ -50,14 +50,22 @@ for src, dst in zip(df["src"], df["dst"]):
     with_prior = {i: v + log_prior(i) for i, v in raw_scores.items()}
     top1 = max(with_prior, key=with_prior.get)
     match = top1 == target
+    # likelihood-only top-1 -- free here, raw_scores is already computed
+    # for the with-prior ranking above; lets both methods' "how often does
+    # it actually find the reference idiom" rate be read side by side,
+    # matching script 04's with/without-prior comparison.
+    top1_without = max(raw_scores, key=raw_scores.get)
+    match_without = top1_without == target
 
     judged_yes, log_p_yes, log_p_no = yes_no_judgment(text, top1)
 
     evaluated += 1
-    print(f"[{evaluated}/{N}] target={target}  top1={top1}  "
-          f"match={match}  judge={'yes' if judged_yes else 'no'}  "
+    print(f"[{evaluated}/{N}] target={target}  top1(with prior)={top1} match={match}  "
+          f"top1(no prior)={top1_without} match={match_without}  "
+          f"judge={'yes' if judged_yes else 'no'}  "
           f"(log p(yes)={log_p_yes:.2f}, log p(no)={log_p_no:.2f})")
     rows.append({"target": target, "top1": top1, "match": match,
+                  "top1_without": top1_without, "match_without": match_without,
                   "judged_yes": judged_yes, "log_p_yes": log_p_yes, "log_p_no": log_p_no})
 
 data = pd.DataFrame(rows)
@@ -66,8 +74,11 @@ print(f"\nevaluated: {evaluated} (skipped: {skipped})\n")
 matches = data[data["match"]]
 mismatches = data[~data["match"]]
 
-print(f"top-1 accuracy (vs. labeled target): {data['match'].mean():.1%}")
-print(f"judge says 'yes, fits' overall: {data['judged_yes'].mean():.1%}")
+print("how often each method's top-1 pick IS the corpus reference idiom:")
+print(f"  likelihood only:      {data['match_without'].mean():.1%}")
+print(f"  likelihood + prior:   {data['match'].mean():.1%}")
+print(f"\njudge says 'yes, fits' overall (on the likelihood+prior pick): "
+      f"{data['judged_yes'].mean():.1%}")
 
 if len(matches):
     print(f"judge agreement when top1 == target (sanity check, "
