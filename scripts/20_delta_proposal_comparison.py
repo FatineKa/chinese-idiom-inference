@@ -145,13 +145,17 @@ for src, dst in zip(df["src"], df["dst"]):
     print(f"shared starting state (independent of target): {x0}")
 
     curves = {}          # name -> (mean TVD curve, std TVD curve)
-    visit_rates = {}     # name -> (mean target-visit rate, std), the DIRECT
-                          # "how often did this method actually land on the
-                          # real answer" number, alongside the TVD curve
+    visit_rates = {}     # name -> (mean target-visit rate, std) -- how much
+                          # of its time the chain spends on the real answer
+    top1_rates = {}       # name -> fraction of seeds whose MOST-VISITED
+                          # idiom (the chain's single "final answer",
+                          # analogous to the ranking system's top-1) matches
+                          # the target -- NOT the last state (see below)
     for beta in BETAS:
         name = "uniform" if beta == 0 else f"beta={beta}"
         seed_curves = []
         seed_visit_rates = []
+        seed_top1_matches = []
         for r in range(N_SEEDS):
             proposer = (uniform_proposer(idioms) if beta == 0
                         else delta_proposer_from_scores(idioms, standardized_scores, beta))
@@ -166,22 +170,38 @@ for src, dst in zip(df["src"], df["dst"]):
             seed_visit_rates.append(trace.count(target) / len(trace))   # counted
                         # from step 1, same as the TVD curve -- no burn-in
                         # discarded, for the same reason
+            # "top-1" for one chain = its single MOST-VISITED idiom, not its
+            # LAST state: a well-mixed chain keeps wandering according to
+            # the whole distribution, it doesn't settle down and stay put,
+            # so the very last state is close to a one-sample coin flip
+            # (noisy, easy to get unlucky) -- the mode is the chain's
+            # actual "best single guess" if forced to name one.
+            from collections import Counter
+            mode_idiom, _ = Counter(trace).most_common(1)[0]
+            seed_top1_matches.append(mode_idiom == target)
         seed_curves = np.array(seed_curves)   # (N_SEEDS, len(checkpoints))
         mean_curve = seed_curves.mean(axis=0)
         curves[name] = (mean_curve, seed_curves.std(axis=0))
         seed_visit_rates = np.array(seed_visit_rates)
         visit_rates[name] = (seed_visit_rates.mean(), seed_visit_rates.std())
+        top1_rates[name] = np.mean(seed_top1_matches)
         acc_rate = sum(accepted) / len(accepted)   # last seed's, as a diagnostic only
         print(f"  {name:>10}: final TVD={mean_curve[-1]:.4f} "
               f"(+/- {seed_curves.std(axis=0)[-1]:.4f} across {N_SEEDS} seeds)  "
               f"target-visit rate={seed_visit_rates.mean():.1%} "
               f"(+/- {seed_visit_rates.std():.1%})  "
+              f"top-1 (mode) match={top1_rates[name]:.1%}  "
               f"last-seed acceptance={acc_rate:.1%}")
 
     print(f"\nhow often each method's chain was actually sitting on the "
           f"corpus reference idiom ({target}):")
     for name, (mean_rate, std_rate) in visit_rates.items():
         print(f"  {name:>10}: {mean_rate:.1%} (+/- {std_rate:.1%})")
+
+    print(f"\nhow often each method's single best guess (most-visited idiom) "
+          f"IS the corpus reference idiom ({target}), across {N_SEEDS} seeds:")
+    for name, rate in top1_rates.items():
+        print(f"  {name:>10}: {rate:.1%}")
 
     fig, ax = plt.subplots(figsize=(7, 4.5))
     for name, (mean_curve, std_curve) in curves.items():
