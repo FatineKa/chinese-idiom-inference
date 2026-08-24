@@ -57,6 +57,35 @@ def score_summary(text, idiom):
     return total
 
 
+@torch.no_grad()
+def yes_no_judgment(text: str, idiom: str) -> tuple:
+    """Direct LLM-as-judge check: does `idiom` fit `text`, according to Qwen
+    itself, asked directly rather than inferred from a likelihood score.
+    Answered by comparing the next-token probability of "是" (yes) vs "否"
+    (no) after a direct question -- a SCORING judgment (one forward pass,
+    read off two logits), not free-form generation, so there is no
+    generated text to parse or that could come back ambiguous.
+
+    Returns (judged_yes: bool, log_p_yes: float, log_p_no: float) -- the raw
+    log-probabilities are kept so the margin between them (confidence) can
+    be inspected, not just the final yes/no call."""
+    yes_ids = _tok("是", add_special_tokens=False).input_ids
+    no_ids = _tok("否", add_special_tokens=False).input_ids
+    assert len(yes_ids) == 1 and len(no_ids) == 1, (
+        f"expected '是'/'否' to each tokenize to exactly one token, got "
+        f"{yes_ids}/{no_ids} -- the single-logit comparison below assumes this")
+
+    prompt = f"成语「{idiom}」适合这句话吗：「{text}」？回答：\n"   # "Does the idiom
+                        # X fit this sentence: Y? Answer:"
+    ids = _tok(prompt, return_tensors="pt").input_ids.to(_device)
+    logp = torch.log_softmax(_model(ids).logits[0, -1], dim=-1)   # next-token
+                        # distribution at the last prompt position only --
+                        # no generation, just reading two logits off it
+    log_p_yes = logp[yes_ids[0]].item()
+    log_p_no = logp[no_ids[0]].item()
+    return log_p_yes > log_p_no, log_p_yes, log_p_no
+
+
 """Let's trace a text all the way through log_prob_total
 
 Take a simple example (in English, to illustrate the mechanics):
