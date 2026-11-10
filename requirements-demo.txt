@@ -1,0 +1,7 @@
+# Live demo only (CPU server).
+# torch: installed in the Dockerfile (CPU-only build).
+fastapi
+uvicorn[standard]
+transformers
+numpy
+scikit-learn

@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chinese Idiom Inference — live demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,700;9..144,900&family=IBM+Plex+Mono:wght@400;500&family=Newsreader:opsz,wght@6..72,400;6..72,500&family=Noto+Serif+SC:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root { --cream: #FAF7F0; --ink: #141310; --faint: #8F8A7E; --hair: #D8D3C6; --red: #B3261E; --mid: #6B6A65; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--cream); color: var(--ink); font-family: "Newsreader", "Noto Serif SC", serif; font-size: 17px; line-height: 1.55; padding: 22px 18px 40px; }
+  main { max-width: 760px; margin: 0 auto; }
+  .k { font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--red); }
+  h1 { font-family: "Fraunces", "Noto Serif SC", serif; font-weight: 900; font-size: clamp(26px, 5vw, 40px); line-height: 1.05; margin: 6px 0 8px; }
+  .lead { color: var(--mid); margin-bottom: 18px; }
+  .formula { font-style: italic; text-align: center; border-top: 1px solid var(--hair); border-bottom: 1px solid var(--hair); padding: 6px 0; margin-bottom: 18px; }
+  textarea { width: 100%; min-height: 90px; font: 20px/1.5 "Noto Serif SC", serif; padding: 12px; border: 1.5px solid var(--ink); border-radius: 10px; background: #fff; color: var(--ink); resize: vertical; }
+  .ex-k { margin: 16px 0 8px; }
+  .ex { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; margin-bottom: 16px; }
+  .ex button { text-align: left; font-family: "Noto Serif SC", serif; font-size: 16px; line-height: 1.4; padding: 10px 12px; }
+  .ex button small { display: block; font-family: "Newsreader", serif; font-style: italic; font-size: 14px; color: var(--mid); margin-top: 4px; }
+  #trans { font-style: italic; color: var(--mid); font-size: 15px; margin-top: 6px; min-height: 22px; }
+  .ex button, .go { font-family: "IBM Plex Mono", monospace; font-size: 12px; border: 1px solid var(--hair); border-radius: 8px; background: transparent; padding: 5px 10px; cursor: pointer; color: var(--ink); }
+  .ex button:hover { border-color: var(--red); color: var(--red); }
+  .go { background: var(--ink); color: var(--cream); border-color: var(--ink); padding: 11px 20px; font-size: 13px; letter-spacing: .06em; }
+  .go:disabled { opacity: .5; cursor: wait; }
+  #status { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--faint); margin: 14px 0 6px; min-height: 18px; }
+  .row { display: grid; grid-template-columns: 34px 120px 1fr 64px; gap: 10px; align-items: center; padding: 9px 0; border-top: 1px solid var(--hair); }
+  .rank { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--faint); }
+  .idiom { font-family: "Noto Serif SC", serif; font-weight: 600; font-size: 22px; }
+  .bar { height: 12px; background: var(--ink); transform-origin: left; animation: grow .7s ease both; }
+  .row:first-child .bar { background: var(--red); }
+  .p { font-family: "IBM Plex Mono", monospace; font-size: 13px; text-align: right; }
+  .meaning { grid-column: 2 / -1; margin-top: -2px; font-size: 15px; }
+  .meaning .py { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--red); margin-right: 8px; }
+  .meaning .none { color: var(--faint); font-style: italic; }
+  .detail { grid-column: 2 / -1; font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--faint); margin-top: -4px; }
+  @keyframes grow { from { transform: scaleX(0); } }
+  .note { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--faint); margin-top: 16px; line-height: 1.6; }
+  a { color: inherit; }
+  @media (prefers-reduced-motion: reduce) { .bar { animation: none; } }
+</style>
+</head>
+<body>
+<main>
+  <p class="k">Live demo · Bayesian idiom retrieval</p>
+  <h1>Which idiom does this sentence describe?</h1>
+  <p class="lead">Write a sentence in Chinese. A language model (Qwen2.5-0.5B) scores how well each candidate idiom explains it, a frequency prior is added, and Bayes' rule gives a posterior.</p>
+  <p class="formula">p(idiom | text) ∝ p(text | idiom) · p(idiom)</p>
+
+  <p class="k ex-k">Don't speak Chinese? Pick a sentence:</p>
+  <div class="ex" aria-label="Example sentences">
+    <button type="button" data-en="The painting was already good, but he added a few more strokes and ruined it.">画已经很好了，他又多加了几笔，反而把画弄坏了。<small>The painting was already good, but he added a few more strokes and ruined it.</small></button>
+    <button type="button" data-en="He shows off his little bit of knowledge in front of experts.">他在专家面前卖弄自己的一点知识。<small>He shows off his little bit of knowledge in front of experts.</small></button>
+    <button type="button" data-en="He keeps waiting for good luck to come to him, without doing anything.">他一直等着好运自己送上门，却什么也不做。<small>He keeps waiting for good luck to come to him, without doing anything.</small></button>
+    <button type="button" data-en="He gets up early and goes to bed late every day, working very hard.">他每天早起晚睡，非常努力地工作。<small>He gets up early and goes to bed late every day, working very hard.</small></button>
+    <button type="button" data-en="The two of them said exactly the same thing, as if they had agreed beforehand.">他们俩说的话完全一样，好像事先商量好了。<small>The two of them said exactly the same thing, as if they had agreed beforehand.</small></button>
+    <button type="button" data-en="He explained it carefully, but the listeners did not understand a thing.">他讲得很认真，可是听的人一点也不懂。<small>He explained it carefully, but the listeners did not understand a thing.</small></button>
+  </div>
+  <p class="k">Or write your own (in Chinese):</p>
+  <textarea id="text" lang="zh" aria-label="Sentence in Chinese">画已经很好了，他又多加了几笔，反而把画弄坏了。</textarea>
+  <p id="trans">The painting was already good, but he added a few more strokes and ruined it.</p>
+  <button type="button" class="go" id="go">FIND THE IDIOM →</button>
+
+  <p id="status" aria-live="polite"></p>
+  <div id="results"></div>
+
+  <p class="note">
+    Demo shortcut: a fast search first keeps the 200 most promising of the 31,114 idioms, taken from the idioms of the most similar training sentences. The correct idiom is among these 200 for 63% of test sentences. Then the exact posterior is computed over those 200. The thesis results use the full dictionary and a larger model.
+    Free CPU server: a query takes a few seconds to tens of seconds.
+    English meanings and pinyin: <a href="https://cc-cedict.org/" target="_blank" rel="noopener">CC-CEDICT</a> (CC BY-SA 4.0); idioms missing from it are shown without a translation.
+    <a href="https://github.com/FatineKa/chinese-idiom-inference" target="_blank" rel="noopener">Code ↗</a>
+  </p>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+// example click: Chinese into the box, English below it
+document.querySelectorAll(".ex button").forEach(b => b.addEventListener("click", () => {
+  $("text").value = b.firstChild.textContent.trim();
+  $("trans").textContent = b.dataset.en;
+}));
+// own sentence: no translation shown
+$("text").addEventListener("input", () => { $("trans").textContent = ""; });
+const escape = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+$("go").addEventListener("click", async () => {
+  const text = $("text").value.trim();
+  if (!text) return;
+  $("go").disabled = true; $("results").innerHTML = "";
+  $("status").textContent = "Scoring the shortlisted idioms with Qwen…";
+  try {
+    const r = await fetch("predict", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, top_k: 8, shortlist_k: 200 }),
+    });
+    if (!r.ok) throw new Error("server error " + r.status);
+    const data = await r.json();
+    const max = data.predictions[0].posterior;
+    $("results").innerHTML = data.predictions.map((p, i) => `
+      <div class="row">
+        <span class="rank">${String(i + 1).padStart(2, "0")}</span>
+        <span class="idiom" lang="zh">${p.idiom}</span>
+        <span><div class="bar" style="width:${(p.posterior / max) * 100}%;animation-delay:${i * 80}ms"></div></span>
+        <span class="p">${(p.posterior * 100).toFixed(1)}%</span>
+        <span class="meaning">${p.english
+          ? `<span class="py">${escape(p.pinyin)}</span>${escape(p.english)}`
+          : `<span class="none">no English entry in CC-CEDICT</span>`}</span>
+        <span class="detail">log-likelihood ${p.log_likelihood.toFixed(1)} · log-prior ${p.log_prior.toFixed(1)}</span>
+      </div>`).join("");
+    $("status").textContent = `${data.mode} · ${data.seconds} s · posterior normalized over these ${data.n_candidates} candidates`;
+  } catch (e) {
+    $("status").textContent = location.protocol === "file:"
+      ? "This page needs the server: run it with Docker (http://localhost:7860) or open the Hugging Face Space."
+      : "Something went wrong (" + e.message + "). The server may be waking up: try again in a minute.";
+  } finally {
+    $("go").disabled = false;
+  }
+});
+</script>
+</body>
+</html>

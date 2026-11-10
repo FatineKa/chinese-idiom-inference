@@ -13,6 +13,11 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install package
-        run: pip install --upgrade pip && pip install -e . ruff
+        run: pip install --upgrade pip && pip install -e . ruff pytest numpy
       - name: Lint
-        run: ruff check src
+        run: ruff check src api
+      # Tests that need no model and no data files. The other tests
+      # (tests/test_direct_application.py) need Qwen and the CIP data,
+      # which are not stored in the repository: run them locally.
+      - name: Tests
+        run: pytest tests/test_shortlist.py tests/test_neighbours.py -v

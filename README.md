@@ -7,6 +7,16 @@ count gives the prior.
 **Two pillars:** the geometric study of embeddings, and model selection
 (learning theory).
 
+## Live demo
+
+A web demo runs the method with Qwen2.5-0.5B on a CPU: a Streamlit app
+(`demo/streamlit_app.py`), plus a FastAPI + Docker version (`api/`, `Dockerfile`).
+To stay fast, it first shortlists 200 candidate idioms: the idioms of the most
+similar training sentences (`src/chengyu/neighbours.py`). The correct idiom is
+among them for 63% of test sentences. Then the exact posterior is computed over
+those 200. The research results below use the full dictionary. Deployment steps,
+and how the shortcut is measured: [DEPLOY.md](DEPLOY.md).
+
 ## Installation
 
 ```bash
