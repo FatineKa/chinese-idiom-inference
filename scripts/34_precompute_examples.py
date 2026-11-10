@@ -5,16 +5,20 @@
   - the idiom the sentence was written for ("intended")
 - Same method as the live demo: shortlist B -> Qwen + prior -> exact posterior.
 - GPU -> K = 1000 candidates (recall@1000 = 83%, script 31).
-- Needs: data/examples_index.npz, data/idiom_en.json
+- Also saves the 3 most similar training sentences (shown in the demo).
+- Needs: data/examples_index.npz, data/idiom_en.json, data/raw/cip/train.csv
 - Output: results/outputs/34_examples.json
 - Run: CHENGYU_MODEL=Qwen/Qwen2.5-0.5B-Instruct python scripts/34_precompute_examples.py"""
 import json
 import os
 import time
 
+import numpy as np
+import pandas as pd
+
 from chengyu.argmax import exact_posterior, text_scores
-from chengyu.evaluation import load_dictionary
-from chengyu.neighbours import load_examples, neighbour_candidates
+from chengyu.evaluation import find_idiom, load_dictionary
+from chengyu.neighbours import encode, load_examples, neighbour_candidates
 from chengyu.prior import log_prior
 
 K = 1000
@@ -46,8 +50,14 @@ EXAMPLES = [
     ("他看书的时候，连饭都忘了吃，觉也忘了睡。", "When he reads, he forgets to eat and to sleep.", "废寝忘食"),
 ]
 
-dictionary, _ = load_dictionary()
+dictionary, lengths = load_dictionary()
 examples = load_examples()
+
+# training sentences, same order as the index (same loop as script 33)
+df = pd.read_csv("data/raw/cip/train.csv").drop_duplicates(subset=["src", "dst"])
+train_src = [src for src, dst in zip(df["src"], df["dst"])
+             if find_idiom(src, dst, dictionary, lengths) is not None]
+assert len(train_src) == len(examples[0]), "train.csv differs from the one used by script 33"
 with open("data/idiom_en.json", encoding="utf-8") as f:
     english = json.load(f)
 
@@ -60,6 +70,7 @@ for text, en, intended in EXAMPLES:
     posterior = exact_posterior(h)
     ranked = sorted(h, key=h.get, reverse=True)
     rank = ranked.index(intended) + 1 if intended in h else None   # None = not in the K candidates
+    near = np.argsort(-(examples[1] @ encode([text])[0]))[:3]      # 3 closest training sentences
     out.append({
         "text": text, "en": en,
         "intended": intended,
@@ -67,6 +78,7 @@ for text, en, intended in EXAMPLES:
         "intended_rank": rank,
         "intended_pinyin": english.get(intended, {}).get("pinyin"),
         "intended_en": english.get(intended, {}).get("en"),
+        "neighbours": [{"text": train_src[j], "idiom": examples[0][j]} for j in near],
         "top": [{"idiom": i, "posterior": round(posterior[i], 4),
                  "pinyin": english.get(i, {}).get("pinyin"), "en": english.get(i, {}).get("en")}
                 for i in ranked[:TOP]],
