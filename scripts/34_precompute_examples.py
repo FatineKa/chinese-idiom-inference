@@ -46,7 +46,6 @@ EXAMPLES = [
     ("他听到一点声音，就以为到处都是敌人。", "He hears a small noise and thinks there are enemies everywhere.", "草木皆兵"),
     ("老师讲了一个例子，他马上就能想到别的例子。", "The teacher gave one example, and he could immediately think of others.", "举一反三"),
     ("他丢了那份工作，后来却找到了更好的。", "He lost that job, but later found a better one.", "塞翁失马"),
-    ("他们两个关系非常好，什么话都可以说。", "The two of them are very close and can talk about anything.", "无话不谈"),
     ("他看书的时候，连饭都忘了吃，觉也忘了睡。", "When he reads, he forgets to eat and to sleep.", "废寝忘食"),
 ]
 
